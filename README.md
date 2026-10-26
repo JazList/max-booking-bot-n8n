@@ -31,7 +31,7 @@ n8n 2.x, PostgreSQL 16, MAX Bot API и MAX Mini Apps, JavaScript без зави
 
 1. Применить `sql/050…054` к PostgreSQL, затем `verify_*.sql`; пример справочника — `booking_refdata_example.sql`.
 2. `node n8n/build.js --render <папка> --client demo --screen answer`, импортировать сценарии в n8n, создать учетные данные PostgreSQL и MAX.
-3. Переменные окружения n8n: `DEMO_MAX_WEBHOOK_SECRET`, `DEMO_WEBAPP_KEY`.
+3. Переменные окружения n8n — по `.env.example`: `DEMO_MAX_WEBHOOK_SECRET`, `DEMO_WEBAPP_KEY`.
 4. `node miniapp/build.js <файл.json>`, импортировать, указать адрес страницы в настройках бота.
 
 ## Автор
