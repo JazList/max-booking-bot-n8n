@@ -1,0 +1,21 @@
+// n8n Code node, mode: Run Once for All Items.
+// Rows of bot_due_reminders -> one MAX message per reminder (buttons: "Приду", "Отменить").
+const API = 'https://platform-api2.max.ru';
+const pad = (n) => String(n).padStart(2, '0');
+const msk = (iso) => new Date(new Date(iso).getTime() + 3 * 3600 * 1000);
+const fmt = (iso) => { const d = msk(iso); return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)} в ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+return $input.all().map((item) => {
+  const r = item.json;
+  const when = /24/.test(String(r.kind)) ? 'завтра' : 'скоро';
+  const text = `Напоминаем: ${when}, ${fmt(r.starts_at)}, у вас запись.\nУслуга: ${r.service_title}\nМастер: ${r.staff_name}`;
+  const buttons = [[
+    { type: 'callback', text: 'Приду', payload: `rem_ok:${r.appointment_uuid}` },
+    { type: 'callback', text: 'Отменить', payload: `cancel:${r.appointment_uuid}` }
+  ]];
+  return { json: {
+    reminder_id: r.reminder_id,
+    method: 'POST',
+    url: `${API}/messages?user_id=${r.max_user_id}`,
+    body: { text, attachments: [{ type: 'inline_keyboard', payload: { buttons } }] }
+  } };
+});

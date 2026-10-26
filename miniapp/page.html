@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Запись в салон</title>
+<!-- Мини-приложение MAX (demo), этап М2: дизайн по mockup.html, данные — API demo-miniapp-api (m2/api.js).
+     Тексты — черновик до согласования. Телефон вводится вручную; запрос номера из MAX — этап М3. -->
+<script src="https://st.max.ru/js/max-web-app.js"></script>
+<style>
+:root {
+  --bg: #faf7f5; --card: #ffffff; --text: #2b2326; --muted: #8a7f83; --line: #ece4e1;
+  --accent: #b8566f; --accent-ink: #ffffff; --accent-soft: #f6e6eb; --ok: #2f8f5b; --warn: #c2410c;
+  --radius: 16px; --shadow: 0 1px 2px rgba(43,35,38,.06), 0 4px 16px rgba(43,35,38,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17131a; --card: #221c25; --text: #f3ecef; --muted: #a39aa1; --line: #342b37;
+    --accent: #e07a95; --accent-ink: #1b1218; --accent-soft: #3a2530; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 16px/1.4 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+.app { max-width: 480px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; }
+header { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 14px 16px 10px; display: flex; align-items: center; gap: 10px; }
+.back { border: 0; background: var(--card); color: var(--text); width: 36px; height: 36px; border-radius: 50%; font-size: 20px; box-shadow: var(--shadow); cursor: pointer; }
+.back[hidden] { display: none; }
+.title { flex: 1; }
+.title small { display: block; color: var(--muted); font-size: 13px; }
+.title b { font-size: 19px; }
+.steps { display: flex; gap: 4px; padding: 0 16px 8px; }
+.steps i { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+.steps i.on { background: var(--accent); }
+main { flex: 1; padding: 6px 16px 120px; }
+.screen { display: none; animation: in .18s ease-out; }
+.screen.on { display: block; }
+@keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+h2 { font-size: 15px; color: var(--muted); font-weight: 500; margin: 14px 0 8px; }
+.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px; cursor: pointer; border: 2px solid transparent; }
+.card:active { transform: scale(.99); }
+.card.sel { border-color: var(--accent); }
+.card .grow { flex: 1; min-width: 0; }
+.card .name { font-weight: 600; }
+.card .meta { color: var(--muted); font-size: 14px; }
+.card .price { font-weight: 600; white-space: nowrap; }
+.ava { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: var(--accent-ink); background: var(--accent); flex: none; }
+.ava.any { background: var(--accent-soft); color: var(--accent); font-size: 22px; }
+.link { display: flex; justify-content: space-between; align-items: center; background: var(--accent-soft); color: var(--accent); border-radius: var(--radius); padding: 12px 16px; font-weight: 600; cursor: pointer; }
+.days { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; scrollbar-width: none; }
+.days::-webkit-scrollbar { display: none; }
+.day { flex: none; width: 56px; padding: 8px 0; text-align: center; border-radius: 14px; background: var(--card); box-shadow: var(--shadow); cursor: pointer; border: 2px solid transparent; }
+.day small { display: block; color: var(--muted); font-size: 12px; }
+.day b { font-size: 18px; }
+.day.sel { background: var(--accent); color: var(--accent-ink); }
+.day.sel small { color: inherit; opacity: .8; }
+.day.off { opacity: .35; cursor: default; }
+.slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.slot { padding: 11px 0; text-align: center; border-radius: 12px; background: var(--card); box-shadow: var(--shadow); cursor: pointer; font-weight: 600; border: 2px solid transparent; }
+.slot.sel { border-color: var(--accent); color: var(--accent); }
+.empty { color: var(--muted); padding: 18px 0; text-align: center; grid-column: 1 / -1; }
+label.f { display: block; margin-bottom: 12px; }
+label.f span { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=tel] { width: 100%; padding: 13px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; color: var(--muted); }
+.check[hidden] { display: none; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; margin-top: 1px; }
+.check a { color: var(--accent); }
+.sum { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 4px 16px; }
+.sum div { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.sum div:last-child { border: 0; }
+.sum span { color: var(--muted); }
+.sum b { text-align: right; }
+.note { font-size: 14px; color: var(--muted); margin-top: 12px; }
+.done { text-align: center; padding-top: 30px; }
+.done .big { width: 76px; height: 76px; margin: 0 auto 14px; border-radius: 50%; background: var(--accent-soft); color: var(--ok); display: grid; place-items: center; font-size: 38px; }
+.appt .meta b { color: var(--text); font-weight: 500; }
+.small-btn { border: 0; background: transparent; color: var(--warn); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; padding: 6px 0; }
+footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); background: linear-gradient(to top, var(--bg) 70%, transparent); }
+footer .inner { max-width: 448px; margin: 0 auto; }
+.main-btn { width: 100%; padding: 15px; border: 0; border-radius: 14px; background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 700; font-size: 17px; cursor: pointer; }
+.main-btn:disabled { opacity: .4; cursor: default; }
+.main-btn[hidden] { display: none; }
+.toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; text-align: center; }
+.toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <button class="back" id="back" hidden aria-label="Назад">‹</button>
+    <div class="title"><small id="sub">Салон красоты</small><b id="ttl">Запись онлайн</b></div>
+  </header>
+  <div class="steps" id="steps"><i></i><i></i><i></i><i></i><i></i></div>
+  <main>
+    <section class="screen" id="s-load"><div class="empty" id="load-text">Загружаю…</div></section>
+    <section class="screen" id="s-service">
+      <div class="link" data-go="my">Мои записи <span id="my-count">›</span></div>
+      <h2>Выберите услугу</h2>
+      <div id="services"></div>
+    </section>
+    <section class="screen" id="s-staff">
+      <h2>Выберите мастера</h2>
+      <div id="staff"></div>
+    </section>
+    <section class="screen" id="s-time">
+      <h2>День</h2>
+      <div class="days" id="days"></div>
+      <h2>Свободное время</h2>
+      <div class="slots" id="slots"></div>
+    </section>
+    <section class="screen" id="s-contact">
+      <h2>Как к вам обращаться</h2>
+      <label class="f"><span>Имя</span><input type="text" id="name" maxlength="60" autocomplete="name"></label>
+      <label class="f"><span>Телефон</span><input type="tel" id="phone" maxlength="24" placeholder="+7 900 000-00-00" autocomplete="tel"></label>
+      <label class="check" id="consent-row"><input type="checkbox" id="consent"><span>Согласен(на) на обработку персональных данных для записи и напоминаний — <a href="#" onclick="return false">политика</a></span></label>
+    </section>
+    <section class="screen" id="s-confirm">
+      <h2>Проверьте запись</h2>
+      <div class="sum" id="sum"></div>
+      <p class="note">Напоминание придет в чат бота за сутки и за 2 часа.</p>
+    </section>
+    <section class="screen" id="s-done">
+      <div class="done">
+        <div class="big">✓</div>
+        <b style="font-size:20px">Вы записаны</b>
+        <p class="note" id="done-text"></p>
+      </div>
+    </section>
+    <section class="screen" id="s-my">
+      <h2>Ваши записи</h2>
+      <div id="my"></div>
+    </section>
+  </main>
+</div>
+<footer><div class="inner"><button class="main-btn" id="main" disabled>Дальше</button></div></footer>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+const WA = window.WebApp || null;
+const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const MON = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+const TZ = 'Europe/Moscow';
+const ERR = {
+  no_init_data: 'Откройте запись из чата бота в MAX', signature_mismatch: 'Не удалось проверить вход. Откройте запись из чата бота заново',
+  stale_auth_date: 'Сессия устарела. Откройте запись из чата бота заново', bad_phone: 'Проверьте номер телефона',
+  no_consent: 'Нужно согласие на обработку данных', no_service: 'Эта услуга сейчас недоступна', too_late: 'Отменить уже нельзя — позвоните в салон'
+};
+
+const st = { screen: 'load', ctx: null, svc: null, staff: null, slots: null, day: null, slot: null, busy: false, last: null };
+const order = ['service', 'staff', 'time', 'contact', 'confirm'];
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const rub = minor => (Math.round(minor) / 100).toLocaleString('ru-RU') + ' ₽';
+const dur = m => (m >= 60 ? Math.floor(m / 60) + ' ч' + (m % 60 ? ' ' + (m % 60) + ' мин' : '') : m + ' мин');
+const ini = n => String(n).split(' ').filter(Boolean).map(w => w[0]).join('').slice(0, 2);
+const ymd = d => d.toISOString().slice(0, 10);
+const mskToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const dayText = key => { const d = new Date(key + 'T00:00:00Z'); return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}, ${WD[d.getUTCDay()]}`; };
+const tsText = iso => {
+  const p = {}; new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(iso)).forEach(x => { p[x.type] = x.value; });
+  return `${dayText(`${p.year}-${p.month}-${p.day}`)}, ${p.hour}:${p.minute}`;
+};
+
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600); }
+
+function api(op, args) {
+  const body = { initData: (WA && WA.initData) || '', fragment: location.hash || '', op: op, args: args || {} };
+  return fetch('demo-miniapp-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+    .then(j => { if (j && j.error_code) { const e = new Error(j.error_code); e.code = j.error_code; throw e; } return j; });
+}
+const errText = e => ERR[e && e.code] || 'Сервер не ответил. Попробуйте еще раз';
+
+function go(name) {
+  st.screen = name;
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('on', s.id === 's-' + name));
+  const i = order.indexOf(name);
+  document.querySelectorAll('#steps i').forEach((el, k) => el.classList.toggle('on', i >= 0 && k <= i));
+  $('steps').style.visibility = i >= 0 ? 'visible' : 'hidden';
+  const back = !(name === 'service' || name === 'done' || name === 'load');
+  $('back').hidden = !back;
+  if (WA && WA.BackButton) { try { back ? WA.BackButton.show() : WA.BackButton.hide(); } catch (e) {} }
+  const titles = { load: 'Запись онлайн', service: 'Запись онлайн', staff: 'Мастер', time: 'Дата и время', contact: 'Контакты', confirm: 'Подтверждение', done: 'Готово', my: 'Мои записи' };
+  $('ttl').textContent = titles[name];
+  $('sub').textContent = st.svc && order.includes(name) && name !== 'service' ? st.svc.title : 'Салон красоты';
+  if (name === 'time' && !st.slots) loadSlots();
+  render();
+  window.scrollTo(0, 0);
+}
+
+function loadSlots() {
+  const key = st.svc.id + '|' + st.staff;
+  st.slots = null; st.slotsKey = key;
+  api('slots', { svc: st.svc.id, staff: st.staff }).then(list => {
+    if (st.slotsKey !== key) return;
+    st.slots = Array.isArray(list) ? list : [];
+    if (!st.day || !st.slots.some(s => s.d === st.day)) st.day = st.slots.length ? st.slots[0].d : null;
+    render();
+  }).catch(e => { st.slots = []; toast(errText(e)); render(); });
+}
+
+// слоты дня: при «любом свободном» одно время — один слот (первый мастер по имени)
+function daySlots(day) {
+  const seen = {}; const out = [];
+  (st.slots || []).forEach(s => { if (s.d === day && !seen[s.t]) { seen[s.t] = 1; out.push(s); } });
+  return out;
+}
+const staffOf = svc => st.ctx.staff.filter(m => m.svc === svc.id);
+const chosenSlot = () => (st.slots || []).find(s => s.id === st.slot);
+const contactOk = () => $('name').value.trim() && $('phone').value.replace(/\D/g, '').length >= 10 && (st.ctx.consent || $('consent').checked);
+
+function render() {
+  const btn = $('main');
+  btn.hidden = st.screen === 'load';
+  if (st.screen === 'service') {
+    const n = (st.ctx.my || []).length;
+    $('my-count').textContent = n ? n + ' ›' : '›';
+    $('services').innerHTML = st.ctx.services.map(s =>
+      `<div class="card${st.svc === s ? ' sel' : ''}" data-svc="${esc(s.id)}"><div class="grow"><div class="name">${esc(s.title)}</div><div class="meta">${dur(s.min)}</div></div><div class="price">${rub(s.price)}</div></div>`).join('')
+      || '<div class="empty">Услуги пока не добавлены</div>';
+    btn.textContent = 'Дальше'; btn.disabled = !st.svc;
+  } else if (st.screen === 'staff') {
+    const list = staffOf(st.svc);
+    $('staff').innerHTML = (list.length > 1 ? `<div class="card${st.staff === 'any' ? ' sel' : ''}" data-staff="any"><div class="ava any">★</div><div class="grow"><div class="name">Любой свободный</div><div class="meta">больше окон</div></div></div>` : '') +
+      list.map(m => `<div class="card${st.staff === m.id ? ' sel' : ''}" data-staff="${esc(m.id)}"><div class="ava">${esc(ini(m.name))}</div><div class="grow"><div class="name">${esc(m.name)}</div></div></div>`).join('')
+      || '<div class="empty">Нет мастеров на эту услугу</div>';
+    btn.textContent = 'Дальше'; btn.disabled = !st.staff;
+  } else if (st.screen === 'time') {
+    if (!st.slots) { $('days').innerHTML = ''; $('slots').innerHTML = '<div class="empty">Загружаю свободное время…</div>'; btn.disabled = true; return; }
+    const has = {}; st.slots.forEach(s => { has[s.d] = 1; });
+    const t0 = new Date(mskToday() + 'T00:00:00Z');
+    let html = '';
+    for (let k = 0; k < 14; k++) {
+      const d = new Date(t0.getTime() + k * 864e5); const key = ymd(d); const off = !has[key];
+      html += `<div class="day${off ? ' off' : ''}${st.day === key ? ' sel' : ''}" ${off ? '' : `data-day="${key}"`}><small>${k === 0 ? 'сег' : WD[d.getUTCDay()]}</small><b>${d.getUTCDate()}</b></div>`;
+    }
+    $('days').innerHTML = html;
+    const sl = st.day ? daySlots(st.day) : [];
+    $('slots').innerHTML = sl.length ? sl.map(s => `<div class="slot${st.slot === s.id ? ' sel' : ''}" data-slot="${esc(s.id)}">${esc(s.t)}</div>`).join('')
+      : `<div class="empty">${st.slots.length ? 'В этот день окон нет' : 'Свободных окон на две недели нет'}</div>`;
+    btn.textContent = 'Дальше'; btn.disabled = !chosenSlot();
+  } else if (st.screen === 'contact') {
+    $('consent-row').hidden = !!st.ctx.consent;
+    btn.textContent = 'Дальше'; btn.disabled = !contactOk();
+  } else if (st.screen === 'confirm') {
+    const s = chosenSlot();
+    $('sum').innerHTML = [
+      ['Услуга', st.svc.title], ['Мастер', s.staff], ['Дата', dayText(s.d)], ['Время', s.t + ' · ' + dur(st.svc.min)],
+      ['Цена', rub(st.svc.price)], ['Имя', $('name').value.trim()], ['Телефон', $('phone').value.trim()]
+    ].map(([a, b]) => `<div><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
+    btn.textContent = st.busy ? 'Записываю…' : 'Записаться'; btn.disabled = st.busy;
+  } else if (st.screen === 'done') {
+    const c = st.last || {};
+    $('done-text').textContent = `${c.service_title || st.svc.title}, ${c.starts_at ? tsText(c.starts_at) : ''}. Мастер: ${c.staff_name || ''}. Ждем вас!`;
+    btn.textContent = 'Записаться еще'; btn.disabled = false;
+  } else if (st.screen === 'my') {
+    const my = st.ctx.my || [];
+    $('my').innerHTML = my.length ? my.map(a =>
+      `<div class="card appt" style="cursor:default"><div class="grow"><div class="name">${esc(a.service_title)}</div><div class="meta"><b>${esc(tsText(a.starts_at))}</b> · ${esc(a.staff_name)}</div>` +
+      (a.can_cancel ? `<button class="small-btn" data-cancel="${esc(a.appointment_uuid)}">Отменить запись</button>` : '') +
+      `</div><div class="price">${a.price_minor != null ? rub(a.price_minor) : ''}</div></div>`).join('')
+      : '<div class="empty">Записей пока нет</div>';
+    btn.textContent = 'Новая запись'; btn.disabled = false;
+  }
+}
+
+function refreshMy() { return api('my').then(my => { st.ctx.my = Array.isArray(my) ? my : []; }); }
+
+function book() {
+  const s = chosenSlot();
+  st.busy = true; render();
+  if (!st.nonce) st.nonce = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  api('book', { svc: st.svc.id, slot: s.id, name: $('name').value.trim(), phone: $('phone').value.trim(), consent: !st.ctx.consent && $('consent').checked, n: st.nonce })
+    .then(r => {
+      st.busy = false;
+      if (r.result === 'ok') {
+        st.ctx.consent = true; st.last = r.card || null; st.nonce = null;
+        refreshMy().catch(() => {}).then(() => render());
+        go('done');
+      } else if (r.result === 'taken') {
+        st.nonce = null; st.slot = null; st.slots = null; toast('Это время уже заняли — выберите другое'); go('time');
+      } else if (r.result === 'bad_phone') { st.nonce = null; toast(ERR.bad_phone); go('contact'); }
+      else { st.nonce = null; toast(ERR[r.result] || 'Не получилось записаться. Попробуйте еще раз'); render(); }
+    })
+    .catch(e => { st.busy = false; toast(errText(e)); render(); });
+}
+
+function cancel(appt, btn) {
+  btn.disabled = true;
+  api('cancel', { appt: appt }).then(r => {
+    if (r.result === 'ok' || r.result === 'already_cancelled') toast('Запись отменена');
+    else toast(ERR[r.result] || 'Не получилось отменить');
+    return refreshMy();
+  }).catch(e => toast(errText(e))).then(() => render());
+}
+
+function back() {
+  if (st.screen === 'my') return go('service');
+  const i = order.indexOf(st.screen);
+  if (i > 0) go(order[i - 1]);
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-svc],[data-staff],[data-day],[data-slot],[data-go],[data-cancel]');
+  if (!t) return;
+  if (t.dataset.svc) { st.svc = st.ctx.services.find(s => s.id === t.dataset.svc); st.staff = null; st.slots = null; st.day = null; st.slot = null; render(); }
+  else if (t.dataset.staff) { st.staff = t.dataset.staff; st.slots = null; st.day = null; st.slot = null; render(); }
+  else if (t.dataset.day) { st.day = t.dataset.day; st.slot = null; render(); }
+  else if (t.dataset.slot) { st.slot = t.dataset.slot; render(); }
+  else if (t.dataset.go) go(t.dataset.go);
+  else if (t.dataset.cancel) cancel(t.dataset.cancel, t);
+});
+
+$('main').addEventListener('click', () => {
+  if (st.screen === 'confirm') { if (!st.busy) book(); }
+  else if (st.screen === 'done' || st.screen === 'my') { Object.assign(st, { svc: null, staff: null, slots: null, day: null, slot: null }); go('service'); }
+  else if (st.screen === 'service' && staffOf(st.svc).length === 1) { st.staff = staffOf(st.svc)[0].id; st.slots = null; go('time'); }
+  else go(order[order.indexOf(st.screen) + 1]);
+});
+$('back').addEventListener('click', back);
+if (WA && WA.BackButton && WA.BackButton.onClick) { try { WA.BackButton.onClick(back); } catch (e) {} }
+['name', 'phone', 'consent'].forEach(id => $(id).addEventListener('input', render));
+$('consent').addEventListener('change', render);
+
+if (WA && WA.ready) { try { WA.ready(); } catch (e) {} }
+go('load');
+api('ctx').then(c => {
+  st.ctx = { services: c.services || [], staff: c.staff || [], consent: !!c.consent, my: Array.isArray(c.my) ? c.my : [] };
+  const u = WA && WA.initDataUnsafe && WA.initDataUnsafe.user;
+  if (u && u.first_name && !$('name').value) $('name').value = u.first_name;
+  go('service');
+}).catch(e => { $('load-text').textContent = errText(e); });
+})();
+</script>
+</body>
+</html>

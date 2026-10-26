@@ -1,0 +1,6 @@
+// n8n Code node, mode: Run Once for Each Item.
+// Delivery result -> status for mark_reminder. HTTP 200 = sent; anything else, including an error item, = failed.
+const src = $('Build reminders').item.json;
+const code = Number($json.statusCode);
+const sent = code === 200 && !$json.error;
+return { json: { reminder_id: src.reminder_id, status: sent ? 'sent' : 'failed', http_status: Number.isFinite(code) ? code : 0 } };

@@ -1,0 +1,402 @@
+{
+  "name": "{{CLIENT_CODE_UPPER}} - booking-dialog-max",
+  "id": "{{N8N_WF_ID:booking-dialog-max}}",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "{{CLIENT_CODE}}-booking-max",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "n01-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "webhookId": "{{CLIENT_CODE}}-booking-max-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node, mode: Run Once for All Items.\n// Based on parts/n8n-max/code/max-webhook-guard.js.txt: secret check and normalisation are the same,\n// the callback branch passes the raw payload (the booking dialog has its own payload scheme).\nconst envelope = $input.first().json || {};\nconst body = envelope.body && typeof envelope.body === 'object' && !Array.isArray(envelope.body)\n  ? envelope.body : envelope;\nconst headers = envelope.headers && typeof envelope.headers === 'object' ? envelope.headers : {};\n\nconst ignored = (errorCode, statusCode = 204) => [{ json: {\n  accepted: false, status_code: statusCode, error_code: errorCode\n} }];\nconst header = (name) => {\n  const wanted = name.toLowerCase();\n  for (const [key, value] of Object.entries(headers)) {\n    if (String(key).toLowerCase() === wanted) return String(value || '');\n  }\n  return '';\n};\nconst sameSecret = (left, right) => {\n  const a = String(left || '');\n  const b = String(right || '');\n  const length = Math.max(a.length, b.length, 1);\n  let difference = a.length ^ b.length;\n  for (let index = 0; index < length; index += 1) {\n    difference |= (a.charCodeAt(index) || 0) ^ (b.charCodeAt(index) || 0);\n  }\n  return difference === 0;\n};\nconst normalizeTs = (value) => {\n  const parsed = Number(value);\n  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 0;\n  return parsed < 100000000000 ? parsed * 1000 : parsed;\n};\n\nconst expectedSecret = String($env.{{CLIENT_CODE_UPPER}}_MAX_WEBHOOK_SECRET || '');\nif (!/^[A-Za-z0-9_-]{5,256}$/.test(expectedSecret)) return ignored('max_secret_not_configured', 503);\nif (!sameSecret(expectedSecret, header('x-max-bot-api-secret'))) return ignored('max_secret_mismatch', 401);\nif (!body || !['message_created', 'message_callback', 'bot_started'].includes(body.update_type)) {\n  return ignored('max_event_ignored');\n}\n// dry run is honoured only after the secret was verified: actions are returned, nothing is sent\nconst dry = header('x-dry-run') === '1';\n\nconst accept = (fields) => {\n  const f = Object.assign({ kind: '', event_id: '', user_id: '', text: '', payload: '', callback_id: '', mid: '' }, fields);\n  f.user_id = String(f.user_id ?? '').trim();\n  f.event_id = String(f.event_id ?? '').trim();\n  f.text = String(f.text ?? '').normalize('NFKC').trim().slice(0, 500);\n  f.payload = String(f.payload ?? '').slice(0, 300);\n  f.callback_id = String(f.callback_id ?? '').trim();\n  f.mid = String(f.mid ?? '').trim();\n  if (!/^[0-9]{1,19}$/.test(f.user_id) || !f.event_id || f.event_id.length > 200) return ignored('max_event_invalid', 400);\n  return [{ json: Object.assign({ accepted: true, status_code: 200, dry }, f) }];\n};\n\nif (body.update_type === 'bot_started') {\n  const userId = body.user && body.user.user_id;\n  return accept({ kind: 'start', user_id: userId, event_id: `bot-started:${body.chat_id}:${normalizeTs(body.timestamp)}` });\n}\n\nif (body.update_type === 'message_callback') {\n  const callback = body.callback && typeof body.callback === 'object' ? body.callback : {};\n  const message = body.message && typeof body.message === 'object' ? body.message : {};\n  const mbody = message.body && typeof message.body === 'object' ? message.body : {};\n  return accept({ kind: 'callback', user_id: callback.user && callback.user.user_id, event_id: callback.callback_id,\n    callback_id: callback.callback_id, payload: callback.payload, mid: mbody.mid });\n}\n\nconst message = body.message && typeof body.message === 'object' ? body.message : {};\nconst messageBody = message.body && typeof message.body === 'object' ? message.body : {};\nconst sender = message.sender && typeof message.sender === 'object' ? message.sender : {};\nif (sender.is_bot === true) return ignored('max_bot_event_ignored');\nconst text = typeof messageBody.text === 'string' ? messageBody.text.normalize('NFKC').trim() : '';\nif (!text) return ignored('max_nontext_event_ignored');\nreturn accept({ kind: 'message', user_id: sender.user_id ?? (body.user && body.user.user_id),\n  event_id: messageBody.mid ?? messageBody.message_id ?? message.message_id ?? message.mid, text, mid: messageBody.mid });\n"
+      },
+      "id": "n02-guard",
+      "name": "Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "accepted-true",
+              "leftValue": "={{ $json.accepted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-accepted",
+      "name": "Accepted",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: $json.error_code } }}",
+        "options": {
+          "responseCode": "={{ $json.status_code }}"
+        }
+      },
+      "id": "n04-respond-reject",
+      "name": "Respond reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select {{CLIENT_CODE}}_booking.bot_context($1::bigint, $2) as ctx",
+        "options": {
+          "queryReplacement": "={{ [$json.user_id, $json.event_id] }}"
+        }
+      },
+      "id": "n05-ctx",
+      "name": "Ctx",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1100,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_ID:pg}}",
+          "name": "{{CLIENT_CODE_UPPER}} n8n_runtime"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node, mode: Run Once for All Items.\n// Event + dialog context -> handler, one whitelisted SQL (constants only, values go as parameters).\nconst SC = '{{CLIENT_CODE}}_booking';\nconst ev = $('Guard').first().json;\nconst ctx = ($input.first().json || {}).ctx || {};\nconst isAdmin = ctx.admin === true;\nconst step = String(ctx.step || '');\nconst data = ctx.data && typeof ctx.data === 'object' ? ctx.data : {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst DAY = /^\\d{4}-\\d{2}-\\d{2}$/;\nconst NOP = \"select '{}'::jsonb as r\";\nconst Q = {\n  svcs: `select coalesce(jsonb_agg(jsonb_build_object('id',service_id,'title',title,'min',duration_minutes,'price',price_minor)),'[]'::jsonb) as r from ${SC}.list_services()`,\n  staff: `select coalesce(jsonb_agg(jsonb_build_object('id',staff_id,'name',display_name)),'[]'::jsonb) as r from ${SC}.list_staff($1::uuid)`,\n  days: `select coalesce(jsonb_agg(d order by d),'[]'::jsonb) as r from (select distinct to_char((starts_at at time zone 'Europe/Moscow')::date,'YYYY-MM-DD') as d from ${SC}.free_slots($1::uuid, nullif($2,'any')::uuid, current_date, current_date+27)) x`,\n  slots: `select coalesce(jsonb_agg(jsonb_build_object('id',slot_id,'t',to_char(starts_at at time zone 'Europe/Moscow','HH24:MI'),'staff',staff_name) order by starts_at),'[]'::jsonb) as r from ${SC}.free_slots($1::uuid, nullif($2,'any')::uuid, $3::date, $3::date)`,\n  summary: `select ${SC}.bot_slot_summary($1::uuid,$2::uuid) as r`,\n  create: `select ${SC}.bot_create_appointment($1::bigint,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6,$7) as r`,\n  acreate: `select ${SC}.bot_admin_create_appointment($1::bigint,$2::uuid,$3::uuid,$4::uuid,$5,$6) as r`,\n  my: `select ${SC}.bot_my_appointments($1::bigint) as r`,\n  cancel: `select ${SC}.bot_cancel_appointment($1::bigint,$2::uuid) as r`,\n  consent: `with c as (select ${SC}.bot_grant_consent($1::bigint)) select '{}'::jsonb as r from c`,\n  alist: `select coalesce(jsonb_agg(jsonb_build_object('id',appointment_uuid,'t',to_char(starts_at at time zone 'Europe/Moscow','HH24:MI'),'svc',service_title,'staff',staff_name,'name',customer_name,'phone',customer_phone,'src',source) order by starts_at),'[]'::jsonb) as r from ${SC}.admin_list_appointments($1::bigint,$2::date,false)`,\n  acancel: `select to_jsonb(${SC}.admin_cancel_appointment($1::bigint,$2::uuid,'cancelled by administrator')) as r`,\n  astaff: `select coalesce(jsonb_agg(jsonb_build_object('id',staff_id,'name',display_name,'active',is_active)),'[]'::jsonb) as r from ${SC}.admin_list_staff($1::bigint)`,\n  aexc: `select to_jsonb(e) as r from ${SC}.admin_set_exception($1::bigint,$2::uuid,$3::date,false,null,null,'bot') e`,\n  arem: `select to_jsonb(${SC}.admin_remove_exception($1::bigint,$2::uuid,$3::date)) as r`,\n  awh: `select to_jsonb(w) as r from ${SC}.admin_set_work_hours($1::bigint,$2::uuid,$3::int,$4::time,$5::time) w`,\n  asvc: `select coalesce(jsonb_agg(jsonb_build_object('id',service_id,'title',title,'min',duration_minutes,'price',price_minor,'active',is_active)),'[]'::jsonb) as r from ${SC}.admin_list_services($1::bigint)`,\n  aupd: `select to_jsonb(${SC}.admin_update_service($1::bigint,$2::uuid,$3,$4::int,$5::bigint,false)) as r`,\n  aact: `select to_jsonb(${SC}.admin_set_service_active($1::bigint,$2::uuid,$3::boolean)) as r`,\n  aadd: `select to_jsonb(${SC}.admin_add_service($1::bigint,$2,$3::int,$4::bigint,null)) as r`\n};\nconst uuidFrom = (s) => {\n  const h = require('crypto').createHash('sha256').update(s).digest('hex');\n  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;\n};\nconst uid = ev.user_id;\nconst go = (handler, sql, params, extra) => [{ json: Object.assign({\n  ev, ctx, handler, sql: sql ? Q[sql] : NOP, params: params || []\n}, extra || {}) }];\nconst menu = () => go(isAdmin ? 'amenu' : 'menu');\nconst bad = (v, re) => !re.test(String(v || ''));\n\nif (ctx.fresh === false) return go('dup');\nif (ev.kind === 'start') return menu();\n\n// ---------- text input ----------\nif (ev.kind === 'message') {\n  const t = ev.text;\n  if (step === 'name' && data.svc && data.slot) {\n    if (t.length < 2 || t.length > 80) return go('ask_name_again', null, [], { st: data });\n    return go('ask_phone', null, [], { st: Object.assign({}, data, { name: t }) });\n  }\n  if (step === 'phone' && data.svc && data.slot && data.name) {\n    const digits = t.replace(/\\D/g, '');\n    if (digits.length < 10 || digits.length > 15) return go('ask_phone_again', null, [], { st: data });\n    const st = Object.assign({}, data, { phone: t.slice(0, 40) });\n    if (data.mode === 'p') {\n      if (!isAdmin) return menu();\n      const appt = uuidFrom(`a|${uid}|${data.slot}|${data.n}`);\n      return go('acreate', 'acreate', [uid, appt, data.svc, data.slot, data.name, st.phone], { st });\n    }\n    return go('summary', 'summary', [data.svc, data.slot], { st });\n  }\n  if (isAdmin && step === 'ahours' && data.sid && data.dow !== undefined) {\n    const m = t.match(/^(\\d{1,2})[:.](\\d{2})\\s*[-–—]\\s*(\\d{1,2})[:.](\\d{2})$/);\n    if (!m) return go('ahours_again', null, [], { st: data });\n    const a = `${m[1].padStart(2, '0')}:${m[2]}`;\n    const b = `${m[3].padStart(2, '0')}:${m[4]}`;\n    return go('ahours', 'awh', [uid, data.sid, String(data.dow), a, b], { st: data });\n  }\n  if (isAdmin && (step === 'aedit' || step === 'anew')) {\n    const parts = t.split(';').map((s) => s.trim());\n    const dur = Number(parts[1]);\n    const price = Number(String(parts[2] || '').replace(',', '.').replace(/\\s/g, ''));\n    if (parts.length !== 3 || parts[0].length < 2 || !Number.isInteger(dur) || dur < 5 || dur > 600\n      || !Number.isFinite(price) || price < 0) return go('aedit_again', null, [], { st: data, step });\n    const minor = String(Math.round(price * 100));\n    if (step === 'aedit' && data.id) return go('aupd', 'aupd', [uid, data.id, parts[0], String(dur), minor]);\n    if (step === 'anew') return go('aadd', 'aadd', [uid, parts[0], String(dur), minor]);\n  }\n  return menu();\n}\n\n// ---------- button presses ----------\nconst [cmd, ...a] = String(ev.payload || '').split(':');\nconst mode = ['psvc', 'pstf', 'pdays', 'pday', 'pslot'].includes(cmd) ? 'p' : '';\nconst c = mode ? cmd.slice(1) : cmd;\nif (mode && !isAdmin) return menu();\nconst adminOnly = ['adays', 'ad', 'ac', 'abook', 'ast', 'as', 'ax', 'axd', 'ar', 'ard', 'aw', 'awd', 'asv', 'asi', 'ase', 'asa', 'asn', 'amenu'];\nif (adminOnly.includes(cmd) && !isAdmin) return menu();\n\nswitch (c) {\n  case 'menu': return menu();\n  case 'book':\n    if (!ctx.consent) return go('consent_ask');\n    return go('svcs', 'svcs', [], { mode: '' });\n  case 'abook': return go('svcs', 'svcs', [], { mode: 'p' });\n  case 'consent': return go('consent_yes', 'consent', [uid]);\n  case 'svc':\n    if (bad(a[0], UUID)) return menu();\n    return go('staff', 'staff', [a[0]], { mode, svc: a[0] });\n  case 'stf':\n  case 'days': {\n    if (bad(a[0], UUID) || (a[1] !== 'any' && bad(a[1], UUID))) return menu();\n    return go('days', 'days', [a[0], a[1]], { mode, svc: a[0], stf: a[1], off: c === 'days' ? Math.max(0, parseInt(a[2], 10) || 0) : 0 });\n  }\n  case 'day':\n    if (bad(a[0], UUID) || (a[1] !== 'any' && bad(a[1], UUID)) || bad(a[2], DAY)) return menu();\n    return go('slots', 'slots', [a[0], a[1], a[2]], { mode, svc: a[0], stf: a[1], day: a[2] });\n  case 'slot':\n    if (bad(a[0], UUID) || bad(a[1], UUID)) return menu();\n    return go('ask_name', null, [], { mode, st: { svc: a[0], slot: a[1], mode, n: ev.event_id.slice(0, 40) } });\n  case 'ok': {\n    if (step !== 'confirm' || !data.svc || !data.slot || !data.name || !data.phone) return menu();\n    const appt = uuidFrom(`b|${uid}|${data.slot}|${data.n}`);\n    const cons = uuidFrom(`c|${uid}|${data.n}`);\n    return go('created', 'create', [uid, appt, cons, data.svc, data.slot, data.name, data.phone]);\n  }\n  case 'my': return go('my', 'my', [uid]);\n  case 'cancel':\n    if (bad(a[0], UUID)) return menu();\n    return go('cancelled', 'cancel', [uid, a[0]]);\n  case 'rem_ok': return go('rem_ok');\n}\nswitch (cmd) {\n  case 'amenu': return menu();\n  case 'adays': return go('adays');\n  case 'ad':\n    if (bad(a[0], DAY)) return menu();\n    return go('alist', 'alist', [uid, a[0]], { day: a[0] });\n  case 'ac':\n    if (bad(a[0], UUID)) return menu();\n    return go('acancelled', 'acancel', [uid, a[0]]);\n  case 'ast': return go('ast', 'astaff', [uid]);\n  case 'as':\n    if (bad(a[0], UUID)) return menu();\n    return go('as', 'astaff', [uid], { sid: a[0] });\n  case 'ax': case 'ar':\n    if (bad(a[0], UUID)) return menu();\n    return go('pickdate', null, [], { sid: a[0], what: cmd });\n  case 'axd':\n    if (bad(a[0], UUID) || bad(a[1], DAY)) return menu();\n    return go('aexc', 'aexc', [uid, a[0], a[1]], { sid: a[0], day: a[1] });\n  case 'ard':\n    if (bad(a[0], UUID) || bad(a[1], DAY)) return menu();\n    return go('arem', 'arem', [uid, a[0], a[1]], { sid: a[0], day: a[1] });\n  case 'aw':\n    if (bad(a[0], UUID)) return menu();\n    return go('pickdow', null, [], { sid: a[0] });\n  case 'awd': {\n    const dow = parseInt(a[1], 10);\n    if (bad(a[0], UUID) || !(dow >= 0 && dow <= 6)) return menu();\n    return go('ask_hours', null, [], { st: { sid: a[0], dow } });\n  }\n  case 'asv': return go('asv', 'asvc', [uid]);\n  case 'asi':\n    if (bad(a[0], UUID)) return menu();\n    return go('asi', 'asvc', [uid], { sid: a[0] });\n  case 'ase':\n    if (bad(a[0], UUID)) return menu();\n    return go('ask_edit', null, [], { st: { id: a[0] } });\n  case 'asn': return go('ask_new', null, []);\n  case 'asa':\n    if (bad(a[0], UUID) || !['0', '1'].includes(a[1])) return menu();\n    return go('aact', 'aact', [uid, a[0], a[1] === '1' ? 'true' : 'false'], { sid: a[0], on: a[1] === '1' });\n}\nreturn menu();\n"
+      },
+      "id": "n06-route",
+      "name": "Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "id": "n07-exec",
+      "name": "Exec",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1540,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_ID:pg}}",
+          "name": "{{CLIENT_CODE_UPPER}} n8n_runtime"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node, mode: Run Once for All Items.\n// Route result + SQL result -> actions for MAX, next dialog state, notifications to administrators.\nconst rt = $('Route').first().json;\nconst ev = rt.ev;\nconst ctx = rt.ctx || {};\nconst exec = $input.first().json || {};\nconst failed = !!exec.error;\nconst r = exec.r;\nconst mode = rt.mode || '';\nconst isAdmin = ctx.admin === true;\nconst admins = (Array.isArray(ctx.admins) ? ctx.admins : []).map(String);\nconst API = 'https://platform-api2.max.ru';\n// How a pressed button changes the screen. Stand check 09.10.2026: see 00_ШАПКА.md.\nconst SCREEN_MODE = '{{SCREEN_MODE}}'; // answer = POST /answers with message, edit = PUT /messages\n\nconst WD = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];\nconst pad = (n) => String(n).padStart(2, '0');\nconst msk = (iso) => new Date(new Date(iso).getTime() + 3 * 3600 * 1000);\nconst fmtDT = (iso) => { const d = msk(iso); return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };\nconst fmtDay = (ymd) => { const d = new Date(`${ymd}T00:00:00Z`); return `${ymd.slice(8, 10)}.${ymd.slice(5, 7)} ${WD[d.getUTCDay()]}`; };\nconst rub = (minor) => (minor == null ? '' : `${Math.round(Number(minor) / 100)} ₽`);\nconst todayMsk = () => msk(new Date().toISOString()).toISOString().slice(0, 10);\nconst addDays = (ymd, n) => new Date(new Date(`${ymd}T00:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);\nconst btn = (text, payload) => ({ type: 'callback', text: String(text).slice(0, 60), payload });\nconst rows = (arr, per) => { const o = []; for (let i = 0; i < arr.length; i += per) o.push(arr.slice(i, i + per)); return o; };\nconst MENU_BTN = [btn('Меню', 'menu')];\n\nlet text = '';\nlet kb = [];\nlet state = 'keep'; // keep | clear | {step, data}\nconst notes = []; // [{user_id, text}]\nlet notification = '';\n\nconst A_BACK = [btn('Назад', 'amenu')];\nconst book = mode === 'p' ? 'abook' : 'book';\nconst P = (c) => `${mode}${c}`;\nconst menuScreen = () => {\n  text = 'Здравствуйте! Здесь можно записаться на услугу и посмотреть свои записи.';\n  kb = [[btn('Записаться', 'book')], [btn('Мои записи', 'my')]];\n  state = 'clear';\n};\nconst amenuScreen = () => {\n  text = 'Меню администратора';\n  kb = [[btn('Записи на день', 'adays')], [btn('Запись по телефону', 'abook')], [btn('Графики', 'ast')], [btn('Услуги', 'asv')]];\n  state = 'clear';\n};\nconst stale = (msg, back) => { text = msg; kb = [back || MENU_BTN]; };\nconst cardLines = (c) => `Услуга: ${c.service_title}\\nМастер: ${c.staff_name}\\nКогда: ${fmtDT(c.starts_at)}${c.price_minor != null ? `\\nЦена: ${rub(c.price_minor)}` : ''}`;\nconst slotRows = (slots, svc, pre) => {\n  const showStaff = new Set(slots.map((s) => s.staff)).size > 1;\n  return rows(slots.map((s) => btn(showStaff ? `${s.t} ${s.staff}` : s.t, `${pre}slot:${svc}:${s.id}`)), showStaff ? 2 : 3);\n};\n\nif (failed) {\n  text = 'Что-то пошло не так, попробуйте еще раз чуть позже.';\n  kb = [isAdmin ? A_BACK : MENU_BTN];\n} else switch (rt.handler) {\n  case 'dup': break;\n  case 'menu': menuScreen(); break;\n  case 'amenu': amenuScreen(); break;\n  case 'consent_ask':\n    text = 'Для записи нужно согласие на обработку персональных данных.\\n\\nЯ даю согласие на обработку персональных данных для записи на услугу, подтверждения и напоминания о визите и ознакомлен(а) с Политикой обработки персональных данных.';\n    kb = [[btn('Согласен', 'consent:yes')], MENU_BTN];\n    break;\n  case 'consent_yes':\n  case 'svcs': {\n    // consent_yes arrives here with an empty result: show services through the same screen on the next press\n    if (rt.handler === 'consent_yes') {\n      text = 'Спасибо! Согласие записано. Теперь можно записаться.';\n      kb = [[btn('Записаться', 'book')], MENU_BTN];\n      break;\n    }\n    const list = Array.isArray(r) ? r : [];\n    if (!list.length) { stale('Сейчас нет доступных услуг.', mode === 'p' ? A_BACK : MENU_BTN); break; }\n    text = mode === 'p' ? 'Запись по телефону. Выберите услугу:' : 'Выберите услугу:';\n    kb = list.map((s) => [btn(`${s.title} · ${s.min} мин${s.price != null ? ` · ${rub(s.price)}` : ''}`, `${P('svc')}:${s.id}`)]);\n    kb.push(mode === 'p' ? A_BACK : MENU_BTN);\n    state = 'clear';\n    break;\n  }\n  case 'staff': {\n    const list = Array.isArray(r) ? r : [];\n    if (!list.length) { stale('Эта услуга сейчас недоступна. Выберите другую.', [btn('К услугам', book)]); break; }\n    text = 'Выберите мастера:';\n    kb = list.map((s) => [btn(s.name, `${P('stf')}:${rt.svc}:${s.id}`)]);\n    kb.push([btn('Любой мастер', `${P('stf')}:${rt.svc}:any`)]);\n    kb.push([btn('Назад', book)]);\n    break;\n  }\n  case 'days': {\n    const days = Array.isArray(r) ? r : [];\n    if (!days.length) { stale('Свободного времени пока нет. Выберите другого мастера или услугу.', [btn('Назад', `${P('svc')}:${rt.svc}`)]); break; }\n    const page = days.slice(rt.off, rt.off + 7);\n    if (!page.length) { stale('Дальше дней нет.', [btn('Назад', `${P('stf')}:${rt.svc}:${rt.stf}`)]); break; }\n    text = 'Выберите день:';\n    kb = rows(page.map((d) => btn(fmtDay(d), `${P('day')}:${rt.svc}:${rt.stf}:${d}`)), 2);\n    if (rt.off + 7 < days.length) kb.push([btn('Дальше →', `${P('days')}:${rt.svc}:${rt.stf}:${rt.off + 7}`)]);\n    kb.push([btn('Назад', `${P('svc')}:${rt.svc}`)]);\n    break;\n  }\n  case 'slots': {\n    const slots = Array.isArray(r) ? r : [];\n    if (!slots.length) { stale('На этот день время уже занято. Выберите другой день.', [btn('Другой день', `${P('stf')}:${rt.svc}:${rt.stf}`)]); break; }\n    text = `Свободное время, ${fmtDay(rt.day)}:`;\n    kb = slotRows(slots, rt.svc, mode);\n    kb.push([btn('Назад', `${P('stf')}:${rt.svc}:${rt.stf}`)]);\n    break;\n  }\n  case 'ask_name':\n    text = mode === 'p' ? 'Как зовут клиента? Напишите имя сообщением.' : 'Как вас зовут? Напишите имя сообщением.';\n    kb = [[btn('Отмена', 'menu')]];\n    state = { step: 'name', data: rt.st };\n    break;\n  case 'ask_name_again':\n    text = 'Имя должно быть от 2 до 80 знаков. Напишите имя еще раз.';\n    kb = [[btn('Отмена', 'menu')]];\n    break;\n  case 'ask_phone':\n    text = 'Напишите номер телефона, например +7 900 123-45-67.';\n    kb = [[btn('Отмена', 'menu')]];\n    state = { step: 'phone', data: rt.st };\n    break;\n  case 'ask_phone_again':\n    text = 'Не похоже на номер телефона. Напишите его еще раз, например +7 900 123-45-67.';\n    kb = [[btn('Отмена', 'menu')]];\n    break;\n  case 'summary': {\n    if (!r || !r.service_title) { stale('Это время уже недоступно. Начните запись заново.', [btn('Записаться', 'book')]); state = 'clear'; break; }\n    text = `Проверьте запись:\\n${cardLines(r)}\\nИмя: ${rt.st.name}\\nТелефон: ${rt.st.phone}`;\n    kb = [[btn('Подтвердить', 'ok')], [btn('Изменить', 'book')]];\n    state = { step: 'confirm', data: rt.st };\n    break;\n  }\n  case 'created':\n  case 'acreate': {\n    const res = r && r.result;\n    const st = rt.st || ctx.data || {};\n    if (res === 'ok') {\n      const c = r.card;\n      if (rt.handler === 'created') {\n        text = `Вы записаны.\\n${cardLines(c)}\\nНапомню о визите за сутки и за 2 часа.`;\n        kb = [[btn('Мои записи', 'my')], MENU_BTN];\n      } else {\n        text = `Запись создана.\\n${cardLines(c)}\\nКлиент: ${c.customer_name}, ${c.customer_phone}`;\n        kb = [A_BACK];\n      }\n      state = 'clear';\n      const who = rt.handler === 'created' ? 'через бота' : 'по телефону';\n      for (const id of admins) if (id !== ev.user_id) {\n        notes.push({ user_id: id, text: `Новая запись (${who}).\\n${cardLines(c)}\\nКлиент: ${c.customer_name}, ${c.customer_phone}` });\n      }\n    } else if (res === 'taken') {\n      const slots = (r.slots || []).map((s) => ({ id: s.slot_id, t: fmtDT(s.starts_at).slice(6), staff: s.staff_name }));\n      const pre = rt.handler === 'acreate' ? 'p' : '';\n      if (slots.length) {\n        text = 'Это время только что заняли. Выберите другое:';\n        kb = slotRows(slots, ctx.data && ctx.data.svc ? ctx.data.svc : st.svc, pre);\n      } else { text = 'Это время только что заняли, на этот день свободного времени больше нет.'; kb = []; }\n      kb.push([btn('К началу', pre ? 'abook' : 'book')]);\n      state = 'clear';\n    } else if (res === 'no_consent') {\n      text = 'Для записи нужно согласие на обработку персональных данных. Нажмите «Записаться» и подтвердите его.';\n      kb = [[btn('Записаться', 'book')]];\n      state = 'clear';\n    } else if (res === 'bad_phone') {\n      text = 'Телефон не принят. Напишите номер еще раз, например +7 900 123-45-67.';\n      kb = [[btn('Отмена', 'menu')]];\n      state = { step: 'phone', data: Object.assign({}, st, { phone: undefined }) };\n    } else if (res === 'forbidden') {\n      menuScreen();\n    } else {\n      text = 'Не получилось оформить запись. Попробуйте позже или позвоните в салон.';\n      kb = [isAdmin ? A_BACK : MENU_BTN];\n      state = 'clear';\n    }\n    break;\n  }\n  case 'my': {\n    const list = (Array.isArray(r) ? r : []).filter((c) => ['planned', 'confirmed'].includes(c.status));\n    if (!list.length) { text = 'Предстоящих записей нет.'; kb = [[btn('Записаться', 'book')], MENU_BTN]; state = 'clear'; break; }\n    text = 'Ваши записи:\\n' + list.map((c) => `• ${fmtDT(c.starts_at)} — ${c.service_title}, ${c.staff_name}${c.can_cancel ? '' : ' (онлайн отменить нельзя, позвоните в салон)'}`).join('\\n');\n    kb = list.filter((c) => c.can_cancel).map((c) => [btn(`Отменить ${fmtDT(c.starts_at)}`, `cancel:${c.appointment_uuid}`)]);\n    kb.push(MENU_BTN);\n    state = 'clear';\n    break;\n  }\n  case 'cancelled': {\n    const res = r && r.result;\n    if (res === 'ok') {\n      text = `Запись отменена.\\n${cardLines(r.card)}`;\n      kb = [[btn('Записаться', 'book')], MENU_BTN];\n      for (const id of admins) if (id !== ev.user_id) {\n        notes.push({ user_id: id, text: `Отмена записи клиентом.\\n${cardLines(r.card)}\\nКлиент: ${r.card.customer_name}, ${r.card.customer_phone}` });\n      }\n    } else if (res === 'too_late') {\n      text = `Отменить онлайн уже нельзя: до визита меньше ${r.cancel_hours} ч. Позвоните в салон.`;\n      kb = [MENU_BTN];\n    } else {\n      text = 'Эта запись уже отменена или не найдена.';\n      kb = [MENU_BTN];\n    }\n    break;\n  }\n  case 'rem_ok':\n    text = 'Спасибо, ждем вас!';\n    kb = [MENU_BTN];\n    notification = 'Ждем вас';\n    break;\n  // ----- administrator -----\n  case 'adays': {\n    const t0 = todayMsk();\n    text = 'Записи на какой день?';\n    kb = rows(Array.from({ length: 7 }, (_, i) => btn(fmtDay(addDays(t0, i)), `ad:${addDays(t0, i)}`)), 2);\n    kb.push(A_BACK);\n    break;\n  }\n  case 'alist': {\n    const list = Array.isArray(r) ? r : [];\n    text = `Записи, ${fmtDay(rt.day)}:` + (list.length ? '\\n' + list.map((x) => `${x.t} ${x.svc}, ${x.staff} — ${x.name}, ${x.phone}${x.src === 'bot' ? '' : ` (${x.src})`}`).join('\\n') : '\\nнет записей');\n    kb = list.map((x) => [btn(`Отменить ${x.t} ${x.name}`, `ac:${x.id}`)]);\n    kb.push([btn('Назад', 'adays')]);\n    break;\n  }\n  case 'acancelled':\n    text = r === true ? 'Запись отменена, время освобождено.' : 'Не удалось отменить: запись не найдена или уже отменена.';\n    kb = [[btn('К дням', 'adays')], A_BACK];\n    break;\n  case 'ast': {\n    const list = Array.isArray(r) ? r : [];\n    text = 'Графики. Выберите мастера:';\n    kb = list.map((s) => [btn(`${s.name}${s.active ? '' : ' (скрыт)'}`, `as:${s.id}`)]);\n    kb.push(A_BACK);\n    break;\n  }\n  case 'as': {\n    const s = (Array.isArray(r) ? r : []).find((x) => x.id === rt.sid);\n    if (!s) { stale('Мастер не найден.', [btn('Назад', 'ast')]); break; }\n    text = `Мастер: ${s.name}. Что сделать?`;\n    kb = [[btn('Выходной на дату', `ax:${s.id}`)], [btn('Часы дня недели', `aw:${s.id}`)], [btn('Снять исключение', `ar:${s.id}`)], [btn('Назад', 'ast')]];\n    break;\n  }\n  case 'pickdate': {\n    const t0 = todayMsk();\n    const code = rt.what === 'ax' ? 'axd' : 'ard';\n    text = rt.what === 'ax' ? 'Какая дата будет выходной?' : 'С какой даты снять исключение?';\n    kb = rows(Array.from({ length: 14 }, (_, i) => btn(fmtDay(addDays(t0, i)), `${code}:${rt.sid}:${addDays(t0, i)}`)), 3);\n    kb.push([btn('Назад', `as:${rt.sid}`)]);\n    break;\n  }\n  case 'aexc':\n    text = `Выходной на ${fmtDay(rt.day)} установлен. Убрано окон: ${r.removed_slots}.` + (r.active_appointments > 0 ? `\\nВнимание: на этот день есть записи (${r.active_appointments}), их нужно отменить или перенести вручную.` : '');\n    kb = [[btn('Назад', `as:${rt.sid}`)]];\n    break;\n  case 'arem':\n    text = r === true ? `Исключение на ${fmtDay(rt.day)} снято, окна вернулись по графику.` : 'На эту дату исключения не было.';\n    kb = [[btn('Назад', `as:${rt.sid}`)]];\n    break;\n  case 'pickdow':\n    text = 'Для какого дня недели изменить часы?';\n    kb = rows([1, 2, 3, 4, 5, 6, 0].map((d) => btn(WD[d], `awd:${rt.sid}:${d}`)), 4);\n    kb.push([btn('Назад', `as:${rt.sid}`)]);\n    break;\n  case 'ask_hours':\n    text = 'Напишите часы работы одной строкой, например 10:00-18:00.';\n    kb = [[btn('Отмена', 'amenu')]];\n    state = { step: 'ahours', data: rt.st };\n    break;\n  case 'ahours_again':\n    text = 'Не понял. Формат: 10:00-18:00.';\n    kb = [[btn('Отмена', 'amenu')]];\n    break;\n  case 'ahours':\n    text = `Часы сохранены. Убрано окон: ${r.removed_slots}, добавлено: ${r.created_slots}.`;\n    kb = [[btn('Назад', `as:${rt.st.sid}`)]];\n    state = 'clear';\n    break;\n  case 'asv': {\n    const list = Array.isArray(r) ? r : [];\n    text = 'Услуги:';\n    kb = list.map((s) => [btn(`${s.title} · ${s.min} мин · ${rub(s.price)}${s.active ? '' : ' (скрыта)'}`, `asi:${s.id}`)]);\n    kb.push([btn('Добавить услугу', 'asn')], A_BACK);\n    break;\n  }\n  case 'asi': {\n    const s = (Array.isArray(r) ? r : []).find((x) => x.id === rt.sid);\n    if (!s) { stale('Услуга не найдена.', [btn('К услугам', 'asv')]); break; }\n    text = `${s.title}\\nДлительность: ${s.min} мин\\nЦена: ${rub(s.price) || 'не указана'}\\nСтатус: ${s.active ? 'показана клиентам' : 'скрыта'}`;\n    kb = [[btn('Изменить', `ase:${s.id}`)], [btn(s.active ? 'Скрыть' : 'Вернуть', `asa:${s.id}:${s.active ? 0 : 1}`)], [btn('Назад', 'asv')]];\n    break;\n  }\n  case 'ask_edit':\n    text = 'Напишите одной строкой: название; минуты; цена в рублях. Например: Стрижка; 60; 1500';\n    kb = [[btn('Отмена', 'asv')]];\n    state = { step: 'aedit', data: rt.st };\n    break;\n  case 'ask_new':\n    text = 'Новая услуга. Напишите одной строкой: название; минуты; цена в рублях. Например: Маникюр; 90; 2000';\n    kb = [[btn('Отмена', 'asv')]];\n    state = { step: 'anew', data: {} };\n    break;\n  case 'aedit_again':\n    text = 'Не понял. Формат: название; минуты; цена. Например: Стрижка; 60; 1500';\n    kb = [[btn('Отмена', 'asv')]];\n    break;\n  case 'aupd':\n    text = r === true ? 'Услуга сохранена.' : 'Не удалось сохранить услугу.';\n    kb = [[btn('К услугам', 'asv')]];\n    state = 'clear';\n    break;\n  case 'aadd':\n    text = r ? 'Услуга добавлена. Чтобы ее могли выбрать, привяжите мастера к услуге (пока через администратора базы).' : 'Не удалось добавить услугу.';\n    kb = [[btn('К услугам', 'asv')]];\n    state = 'clear';\n    break;\n  case 'aact':\n    text = r === true ? (rt.on ? 'Услуга возвращена клиентам.' : 'Услуга скрыта от клиентов.') : 'Не удалось изменить статус услуги.';\n    kb = [[btn('К услугам', 'asv')]];\n    break;\n  default: menuScreen();\n}\n\nconst body = { text };\nif (kb.length) body.attachments = [{ type: 'inline_keyboard', payload: { buttons: kb } }];\nconst actions = [];\nif (rt.handler !== 'dup') {\n  if (ev.kind === 'callback') {\n    if (SCREEN_MODE === 'edit' && ev.mid) {\n      actions.push({ op: 'edit', method: 'PUT', url: `${API}/messages?message_id=${encodeURIComponent(ev.mid)}`, body });\n      actions.push({ op: 'answer', method: 'POST', url: `${API}/answers?callback_id=${encodeURIComponent(ev.callback_id)}`, body: notification ? { notification } : {} });\n    } else {\n      actions.push({ op: 'answer', method: 'POST', url: `${API}/answers?callback_id=${encodeURIComponent(ev.callback_id)}`, body: notification ? { message: body, notification } : { message: body } });\n    }\n  } else {\n    actions.push({ op: 'send', method: 'POST', url: `${API}/messages?user_id=${ev.user_id}`, body });\n  }\n  for (const n of notes) actions.push({ op: 'notify', method: 'POST', url: `${API}/messages?user_id=${n.user_id}`, body: { text: n.text } });\n}\nlet st = { set: false, step: '', data: {} };\nif (state === 'clear') st = { set: true, step: '', data: {} };\nelse if (state !== 'keep') st = { set: true, step: state.step, data: JSON.parse(JSON.stringify(state.data || {})) };\n// a button that opens a text step must also reset stale text steps; a plain screen change keeps the current step\nreturn [{ json: { user_id: ev.user_id, dry: ev.dry === true, handler: rt.handler, actions,\n  state_set: st.set, state_step: st.step, state_data: JSON.stringify(st.data) } }];\n"
+      },
+      "id": "n08-render",
+      "name": "Render",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select count(*) as saved from (select {{CLIENT_CODE}}_booking.bot_state_set($1::bigint, nullif($3, ''), $4::jsonb) where $2::boolean) x",
+        "options": {
+          "queryReplacement": "={{ [$json.user_id, $json.state_set, $json.state_step, $json.state_data] }}"
+        }
+      },
+      "id": "n09-save-state",
+      "name": "Save state",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1980,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_ID:pg}}",
+          "name": "{{CLIENT_CODE_UPPER}} n8n_runtime"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, handler: $('Render').first().json.handler, actions: $('Render').first().json.dry ? $('Render').first().json.actions : undefined } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "n10-respond-ok",
+      "name": "Respond ok",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $('Render').first().json;\nif (r.dry) return [];\nreturn (r.actions || []).map((a) => ({ json: a }));"
+      },
+      "id": "n11-explode",
+      "name": "Explode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 600
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "n12-send",
+      "name": "Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CRED_ID:max}}",
+          "name": "{{CLIENT_CODE_UPPER}} MAX bot token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const src = $('Explode').item.json;\nreturn { json: { op: src.op, http_status: Number($json.statusCode) || 0, error: $json.error ? true : false } };"
+      },
+      "id": "n13-delivery-log",
+      "name": "Delivery log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard": {
+      "main": [
+        [
+          {
+            "node": "Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accepted": {
+      "main": [
+        [
+          {
+            "node": "Ctx",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ctx": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Exec",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exec": {
+      "main": [
+        [
+          {
+            "node": "Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render": {
+      "main": [
+        [
+          {
+            "node": "Save state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save state": {
+      "main": [
+        [
+          {
+            "node": "Respond ok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond ok": {
+      "main": [
+        [
+          {
+            "node": "Explode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode": {
+      "main": [
+        [
+          {
+            "node": "Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send": {
+      "main": [
+        [
+          {
+            "node": "Delivery log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  }
+}

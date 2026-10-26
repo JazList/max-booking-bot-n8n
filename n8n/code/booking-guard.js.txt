@@ -1,0 +1,76 @@
+// n8n Code node, mode: Run Once for All Items.
+// Based on parts/n8n-max/code/max-webhook-guard.js.txt: secret check and normalisation are the same,
+// the callback branch passes the raw payload (the booking dialog has its own payload scheme).
+const envelope = $input.first().json || {};
+const body = envelope.body && typeof envelope.body === 'object' && !Array.isArray(envelope.body)
+  ? envelope.body : envelope;
+const headers = envelope.headers && typeof envelope.headers === 'object' ? envelope.headers : {};
+
+const ignored = (errorCode, statusCode = 204) => [{ json: {
+  accepted: false, status_code: statusCode, error_code: errorCode
+} }];
+const header = (name) => {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).toLowerCase() === wanted) return String(value || '');
+  }
+  return '';
+};
+const sameSecret = (left, right) => {
+  const a = String(left || '');
+  const b = String(right || '');
+  const length = Math.max(a.length, b.length, 1);
+  let difference = a.length ^ b.length;
+  for (let index = 0; index < length; index += 1) {
+    difference |= (a.charCodeAt(index) || 0) ^ (b.charCodeAt(index) || 0);
+  }
+  return difference === 0;
+};
+const normalizeTs = (value) => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 0;
+  return parsed < 100000000000 ? parsed * 1000 : parsed;
+};
+
+const expectedSecret = String($env.{{CLIENT_CODE_UPPER}}_MAX_WEBHOOK_SECRET || '');
+if (!/^[A-Za-z0-9_-]{5,256}$/.test(expectedSecret)) return ignored('max_secret_not_configured', 503);
+if (!sameSecret(expectedSecret, header('x-max-bot-api-secret'))) return ignored('max_secret_mismatch', 401);
+if (!body || !['message_created', 'message_callback', 'bot_started'].includes(body.update_type)) {
+  return ignored('max_event_ignored');
+}
+// dry run is honoured only after the secret was verified: actions are returned, nothing is sent
+const dry = header('x-dry-run') === '1';
+
+const accept = (fields) => {
+  const f = Object.assign({ kind: '', event_id: '', user_id: '', text: '', payload: '', callback_id: '', mid: '' }, fields);
+  f.user_id = String(f.user_id ?? '').trim();
+  f.event_id = String(f.event_id ?? '').trim();
+  f.text = String(f.text ?? '').normalize('NFKC').trim().slice(0, 500);
+  f.payload = String(f.payload ?? '').slice(0, 300);
+  f.callback_id = String(f.callback_id ?? '').trim();
+  f.mid = String(f.mid ?? '').trim();
+  if (!/^[0-9]{1,19}$/.test(f.user_id) || !f.event_id || f.event_id.length > 200) return ignored('max_event_invalid', 400);
+  return [{ json: Object.assign({ accepted: true, status_code: 200, dry }, f) }];
+};
+
+if (body.update_type === 'bot_started') {
+  const userId = body.user && body.user.user_id;
+  return accept({ kind: 'start', user_id: userId, event_id: `bot-started:${body.chat_id}:${normalizeTs(body.timestamp)}` });
+}
+
+if (body.update_type === 'message_callback') {
+  const callback = body.callback && typeof body.callback === 'object' ? body.callback : {};
+  const message = body.message && typeof body.message === 'object' ? body.message : {};
+  const mbody = message.body && typeof message.body === 'object' ? message.body : {};
+  return accept({ kind: 'callback', user_id: callback.user && callback.user.user_id, event_id: callback.callback_id,
+    callback_id: callback.callback_id, payload: callback.payload, mid: mbody.mid });
+}
+
+const message = body.message && typeof body.message === 'object' ? body.message : {};
+const messageBody = message.body && typeof message.body === 'object' ? message.body : {};
+const sender = message.sender && typeof message.sender === 'object' ? message.sender : {};
+if (sender.is_bot === true) return ignored('max_bot_event_ignored');
+const text = typeof messageBody.text === 'string' ? messageBody.text.normalize('NFKC').trim() : '';
+if (!text) return ignored('max_nontext_event_ignored');
+return accept({ kind: 'message', user_id: sender.user_id ?? (body.user && body.user.user_id),
+  event_id: messageBody.mid ?? messageBody.message_id ?? message.message_id ?? message.mid, text, mid: messageBody.mid });

@@ -1,0 +1,343 @@
+// n8n Code node, mode: Run Once for All Items.
+// Route result + SQL result -> actions for MAX, next dialog state, notifications to administrators.
+const rt = $('Route').first().json;
+const ev = rt.ev;
+const ctx = rt.ctx || {};
+const exec = $input.first().json || {};
+const failed = !!exec.error;
+const r = exec.r;
+const mode = rt.mode || '';
+const isAdmin = ctx.admin === true;
+const admins = (Array.isArray(ctx.admins) ? ctx.admins : []).map(String);
+const API = 'https://platform-api2.max.ru';
+// How a pressed button changes the screen. Stand check 09.10.2026: see 00_ШАПКА.md.
+const SCREEN_MODE = '{{SCREEN_MODE}}'; // answer = POST /answers with message, edit = PUT /messages
+
+const WD = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const pad = (n) => String(n).padStart(2, '0');
+const msk = (iso) => new Date(new Date(iso).getTime() + 3 * 3600 * 1000);
+const fmtDT = (iso) => { const d = msk(iso); return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+const fmtDay = (ymd) => { const d = new Date(`${ymd}T00:00:00Z`); return `${ymd.slice(8, 10)}.${ymd.slice(5, 7)} ${WD[d.getUTCDay()]}`; };
+const rub = (minor) => (minor == null ? '' : `${Math.round(Number(minor) / 100)} ₽`);
+const todayMsk = () => msk(new Date().toISOString()).toISOString().slice(0, 10);
+const addDays = (ymd, n) => new Date(new Date(`${ymd}T00:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+const btn = (text, payload) => ({ type: 'callback', text: String(text).slice(0, 60), payload });
+const rows = (arr, per) => { const o = []; for (let i = 0; i < arr.length; i += per) o.push(arr.slice(i, i + per)); return o; };
+const MENU_BTN = [btn('Меню', 'menu')];
+
+let text = '';
+let kb = [];
+let state = 'keep'; // keep | clear | {step, data}
+const notes = []; // [{user_id, text}]
+let notification = '';
+
+const A_BACK = [btn('Назад', 'amenu')];
+const book = mode === 'p' ? 'abook' : 'book';
+const P = (c) => `${mode}${c}`;
+const menuScreen = () => {
+  text = 'Здравствуйте! Здесь можно записаться на услугу и посмотреть свои записи.';
+  kb = [[btn('Записаться', 'book')], [btn('Мои записи', 'my')]];
+  state = 'clear';
+};
+const amenuScreen = () => {
+  text = 'Меню администратора';
+  kb = [[btn('Записи на день', 'adays')], [btn('Запись по телефону', 'abook')], [btn('Графики', 'ast')], [btn('Услуги', 'asv')]];
+  state = 'clear';
+};
+const stale = (msg, back) => { text = msg; kb = [back || MENU_BTN]; };
+const cardLines = (c) => `Услуга: ${c.service_title}\nМастер: ${c.staff_name}\nКогда: ${fmtDT(c.starts_at)}${c.price_minor != null ? `\nЦена: ${rub(c.price_minor)}` : ''}`;
+const slotRows = (slots, svc, pre) => {
+  const showStaff = new Set(slots.map((s) => s.staff)).size > 1;
+  return rows(slots.map((s) => btn(showStaff ? `${s.t} ${s.staff}` : s.t, `${pre}slot:${svc}:${s.id}`)), showStaff ? 2 : 3);
+};
+
+if (failed) {
+  text = 'Что-то пошло не так, попробуйте еще раз чуть позже.';
+  kb = [isAdmin ? A_BACK : MENU_BTN];
+} else switch (rt.handler) {
+  case 'dup': break;
+  case 'menu': menuScreen(); break;
+  case 'amenu': amenuScreen(); break;
+  case 'consent_ask':
+    text = 'Для записи нужно согласие на обработку персональных данных.\n\nЯ даю согласие на обработку персональных данных для записи на услугу, подтверждения и напоминания о визите и ознакомлен(а) с Политикой обработки персональных данных.';
+    kb = [[btn('Согласен', 'consent:yes')], MENU_BTN];
+    break;
+  case 'consent_yes':
+  case 'svcs': {
+    // consent_yes arrives here with an empty result: show services through the same screen on the next press
+    if (rt.handler === 'consent_yes') {
+      text = 'Спасибо! Согласие записано. Теперь можно записаться.';
+      kb = [[btn('Записаться', 'book')], MENU_BTN];
+      break;
+    }
+    const list = Array.isArray(r) ? r : [];
+    if (!list.length) { stale('Сейчас нет доступных услуг.', mode === 'p' ? A_BACK : MENU_BTN); break; }
+    text = mode === 'p' ? 'Запись по телефону. Выберите услугу:' : 'Выберите услугу:';
+    kb = list.map((s) => [btn(`${s.title} · ${s.min} мин${s.price != null ? ` · ${rub(s.price)}` : ''}`, `${P('svc')}:${s.id}`)]);
+    kb.push(mode === 'p' ? A_BACK : MENU_BTN);
+    state = 'clear';
+    break;
+  }
+  case 'staff': {
+    const list = Array.isArray(r) ? r : [];
+    if (!list.length) { stale('Эта услуга сейчас недоступна. Выберите другую.', [btn('К услугам', book)]); break; }
+    text = 'Выберите мастера:';
+    kb = list.map((s) => [btn(s.name, `${P('stf')}:${rt.svc}:${s.id}`)]);
+    kb.push([btn('Любой мастер', `${P('stf')}:${rt.svc}:any`)]);
+    kb.push([btn('Назад', book)]);
+    break;
+  }
+  case 'days': {
+    const days = Array.isArray(r) ? r : [];
+    if (!days.length) { stale('Свободного времени пока нет. Выберите другого мастера или услугу.', [btn('Назад', `${P('svc')}:${rt.svc}`)]); break; }
+    const page = days.slice(rt.off, rt.off + 7);
+    if (!page.length) { stale('Дальше дней нет.', [btn('Назад', `${P('stf')}:${rt.svc}:${rt.stf}`)]); break; }
+    text = 'Выберите день:';
+    kb = rows(page.map((d) => btn(fmtDay(d), `${P('day')}:${rt.svc}:${rt.stf}:${d}`)), 2);
+    if (rt.off + 7 < days.length) kb.push([btn('Дальше →', `${P('days')}:${rt.svc}:${rt.stf}:${rt.off + 7}`)]);
+    kb.push([btn('Назад', `${P('svc')}:${rt.svc}`)]);
+    break;
+  }
+  case 'slots': {
+    const slots = Array.isArray(r) ? r : [];
+    if (!slots.length) { stale('На этот день время уже занято. Выберите другой день.', [btn('Другой день', `${P('stf')}:${rt.svc}:${rt.stf}`)]); break; }
+    text = `Свободное время, ${fmtDay(rt.day)}:`;
+    kb = slotRows(slots, rt.svc, mode);
+    kb.push([btn('Назад', `${P('stf')}:${rt.svc}:${rt.stf}`)]);
+    break;
+  }
+  case 'ask_name':
+    text = mode === 'p' ? 'Как зовут клиента? Напишите имя сообщением.' : 'Как вас зовут? Напишите имя сообщением.';
+    kb = [[btn('Отмена', 'menu')]];
+    state = { step: 'name', data: rt.st };
+    break;
+  case 'ask_name_again':
+    text = 'Имя должно быть от 2 до 80 знаков. Напишите имя еще раз.';
+    kb = [[btn('Отмена', 'menu')]];
+    break;
+  case 'ask_phone':
+    text = 'Напишите номер телефона, например +7 900 123-45-67.';
+    kb = [[btn('Отмена', 'menu')]];
+    state = { step: 'phone', data: rt.st };
+    break;
+  case 'ask_phone_again':
+    text = 'Не похоже на номер телефона. Напишите его еще раз, например +7 900 123-45-67.';
+    kb = [[btn('Отмена', 'menu')]];
+    break;
+  case 'summary': {
+    if (!r || !r.service_title) { stale('Это время уже недоступно. Начните запись заново.', [btn('Записаться', 'book')]); state = 'clear'; break; }
+    text = `Проверьте запись:\n${cardLines(r)}\nИмя: ${rt.st.name}\nТелефон: ${rt.st.phone}`;
+    kb = [[btn('Подтвердить', 'ok')], [btn('Изменить', 'book')]];
+    state = { step: 'confirm', data: rt.st };
+    break;
+  }
+  case 'created':
+  case 'acreate': {
+    const res = r && r.result;
+    const st = rt.st || ctx.data || {};
+    if (res === 'ok') {
+      const c = r.card;
+      if (rt.handler === 'created') {
+        text = `Вы записаны.\n${cardLines(c)}\nНапомню о визите за сутки и за 2 часа.`;
+        kb = [[btn('Мои записи', 'my')], MENU_BTN];
+      } else {
+        text = `Запись создана.\n${cardLines(c)}\nКлиент: ${c.customer_name}, ${c.customer_phone}`;
+        kb = [A_BACK];
+      }
+      state = 'clear';
+      const who = rt.handler === 'created' ? 'через бота' : 'по телефону';
+      for (const id of admins) if (id !== ev.user_id) {
+        notes.push({ user_id: id, text: `Новая запись (${who}).\n${cardLines(c)}\nКлиент: ${c.customer_name}, ${c.customer_phone}` });
+      }
+    } else if (res === 'taken') {
+      const slots = (r.slots || []).map((s) => ({ id: s.slot_id, t: fmtDT(s.starts_at).slice(6), staff: s.staff_name }));
+      const pre = rt.handler === 'acreate' ? 'p' : '';
+      if (slots.length) {
+        text = 'Это время только что заняли. Выберите другое:';
+        kb = slotRows(slots, ctx.data && ctx.data.svc ? ctx.data.svc : st.svc, pre);
+      } else { text = 'Это время только что заняли, на этот день свободного времени больше нет.'; kb = []; }
+      kb.push([btn('К началу', pre ? 'abook' : 'book')]);
+      state = 'clear';
+    } else if (res === 'no_consent') {
+      text = 'Для записи нужно согласие на обработку персональных данных. Нажмите «Записаться» и подтвердите его.';
+      kb = [[btn('Записаться', 'book')]];
+      state = 'clear';
+    } else if (res === 'bad_phone') {
+      text = 'Телефон не принят. Напишите номер еще раз, например +7 900 123-45-67.';
+      kb = [[btn('Отмена', 'menu')]];
+      state = { step: 'phone', data: Object.assign({}, st, { phone: undefined }) };
+    } else if (res === 'forbidden') {
+      menuScreen();
+    } else {
+      text = 'Не получилось оформить запись. Попробуйте позже или позвоните в салон.';
+      kb = [isAdmin ? A_BACK : MENU_BTN];
+      state = 'clear';
+    }
+    break;
+  }
+  case 'my': {
+    const list = (Array.isArray(r) ? r : []).filter((c) => ['planned', 'confirmed'].includes(c.status));
+    if (!list.length) { text = 'Предстоящих записей нет.'; kb = [[btn('Записаться', 'book')], MENU_BTN]; state = 'clear'; break; }
+    text = 'Ваши записи:\n' + list.map((c) => `• ${fmtDT(c.starts_at)} — ${c.service_title}, ${c.staff_name}${c.can_cancel ? '' : ' (онлайн отменить нельзя, позвоните в салон)'}`).join('\n');
+    kb = list.filter((c) => c.can_cancel).map((c) => [btn(`Отменить ${fmtDT(c.starts_at)}`, `cancel:${c.appointment_uuid}`)]);
+    kb.push(MENU_BTN);
+    state = 'clear';
+    break;
+  }
+  case 'cancelled': {
+    const res = r && r.result;
+    if (res === 'ok') {
+      text = `Запись отменена.\n${cardLines(r.card)}`;
+      kb = [[btn('Записаться', 'book')], MENU_BTN];
+      for (const id of admins) if (id !== ev.user_id) {
+        notes.push({ user_id: id, text: `Отмена записи клиентом.\n${cardLines(r.card)}\nКлиент: ${r.card.customer_name}, ${r.card.customer_phone}` });
+      }
+    } else if (res === 'too_late') {
+      text = `Отменить онлайн уже нельзя: до визита меньше ${r.cancel_hours} ч. Позвоните в салон.`;
+      kb = [MENU_BTN];
+    } else {
+      text = 'Эта запись уже отменена или не найдена.';
+      kb = [MENU_BTN];
+    }
+    break;
+  }
+  case 'rem_ok':
+    text = 'Спасибо, ждем вас!';
+    kb = [MENU_BTN];
+    notification = 'Ждем вас';
+    break;
+  // ----- administrator -----
+  case 'adays': {
+    const t0 = todayMsk();
+    text = 'Записи на какой день?';
+    kb = rows(Array.from({ length: 7 }, (_, i) => btn(fmtDay(addDays(t0, i)), `ad:${addDays(t0, i)}`)), 2);
+    kb.push(A_BACK);
+    break;
+  }
+  case 'alist': {
+    const list = Array.isArray(r) ? r : [];
+    text = `Записи, ${fmtDay(rt.day)}:` + (list.length ? '\n' + list.map((x) => `${x.t} ${x.svc}, ${x.staff} — ${x.name}, ${x.phone}${x.src === 'bot' ? '' : ` (${x.src})`}`).join('\n') : '\nнет записей');
+    kb = list.map((x) => [btn(`Отменить ${x.t} ${x.name}`, `ac:${x.id}`)]);
+    kb.push([btn('Назад', 'adays')]);
+    break;
+  }
+  case 'acancelled':
+    text = r === true ? 'Запись отменена, время освобождено.' : 'Не удалось отменить: запись не найдена или уже отменена.';
+    kb = [[btn('К дням', 'adays')], A_BACK];
+    break;
+  case 'ast': {
+    const list = Array.isArray(r) ? r : [];
+    text = 'Графики. Выберите мастера:';
+    kb = list.map((s) => [btn(`${s.name}${s.active ? '' : ' (скрыт)'}`, `as:${s.id}`)]);
+    kb.push(A_BACK);
+    break;
+  }
+  case 'as': {
+    const s = (Array.isArray(r) ? r : []).find((x) => x.id === rt.sid);
+    if (!s) { stale('Мастер не найден.', [btn('Назад', 'ast')]); break; }
+    text = `Мастер: ${s.name}. Что сделать?`;
+    kb = [[btn('Выходной на дату', `ax:${s.id}`)], [btn('Часы дня недели', `aw:${s.id}`)], [btn('Снять исключение', `ar:${s.id}`)], [btn('Назад', 'ast')]];
+    break;
+  }
+  case 'pickdate': {
+    const t0 = todayMsk();
+    const code = rt.what === 'ax' ? 'axd' : 'ard';
+    text = rt.what === 'ax' ? 'Какая дата будет выходной?' : 'С какой даты снять исключение?';
+    kb = rows(Array.from({ length: 14 }, (_, i) => btn(fmtDay(addDays(t0, i)), `${code}:${rt.sid}:${addDays(t0, i)}`)), 3);
+    kb.push([btn('Назад', `as:${rt.sid}`)]);
+    break;
+  }
+  case 'aexc':
+    text = `Выходной на ${fmtDay(rt.day)} установлен. Убрано окон: ${r.removed_slots}.` + (r.active_appointments > 0 ? `\nВнимание: на этот день есть записи (${r.active_appointments}), их нужно отменить или перенести вручную.` : '');
+    kb = [[btn('Назад', `as:${rt.sid}`)]];
+    break;
+  case 'arem':
+    text = r === true ? `Исключение на ${fmtDay(rt.day)} снято, окна вернулись по графику.` : 'На эту дату исключения не было.';
+    kb = [[btn('Назад', `as:${rt.sid}`)]];
+    break;
+  case 'pickdow':
+    text = 'Для какого дня недели изменить часы?';
+    kb = rows([1, 2, 3, 4, 5, 6, 0].map((d) => btn(WD[d], `awd:${rt.sid}:${d}`)), 4);
+    kb.push([btn('Назад', `as:${rt.sid}`)]);
+    break;
+  case 'ask_hours':
+    text = 'Напишите часы работы одной строкой, например 10:00-18:00.';
+    kb = [[btn('Отмена', 'amenu')]];
+    state = { step: 'ahours', data: rt.st };
+    break;
+  case 'ahours_again':
+    text = 'Не понял. Формат: 10:00-18:00.';
+    kb = [[btn('Отмена', 'amenu')]];
+    break;
+  case 'ahours':
+    text = `Часы сохранены. Убрано окон: ${r.removed_slots}, добавлено: ${r.created_slots}.`;
+    kb = [[btn('Назад', `as:${rt.st.sid}`)]];
+    state = 'clear';
+    break;
+  case 'asv': {
+    const list = Array.isArray(r) ? r : [];
+    text = 'Услуги:';
+    kb = list.map((s) => [btn(`${s.title} · ${s.min} мин · ${rub(s.price)}${s.active ? '' : ' (скрыта)'}`, `asi:${s.id}`)]);
+    kb.push([btn('Добавить услугу', 'asn')], A_BACK);
+    break;
+  }
+  case 'asi': {
+    const s = (Array.isArray(r) ? r : []).find((x) => x.id === rt.sid);
+    if (!s) { stale('Услуга не найдена.', [btn('К услугам', 'asv')]); break; }
+    text = `${s.title}\nДлительность: ${s.min} мин\nЦена: ${rub(s.price) || 'не указана'}\nСтатус: ${s.active ? 'показана клиентам' : 'скрыта'}`;
+    kb = [[btn('Изменить', `ase:${s.id}`)], [btn(s.active ? 'Скрыть' : 'Вернуть', `asa:${s.id}:${s.active ? 0 : 1}`)], [btn('Назад', 'asv')]];
+    break;
+  }
+  case 'ask_edit':
+    text = 'Напишите одной строкой: название; минуты; цена в рублях. Например: Стрижка; 60; 1500';
+    kb = [[btn('Отмена', 'asv')]];
+    state = { step: 'aedit', data: rt.st };
+    break;
+  case 'ask_new':
+    text = 'Новая услуга. Напишите одной строкой: название; минуты; цена в рублях. Например: Маникюр; 90; 2000';
+    kb = [[btn('Отмена', 'asv')]];
+    state = { step: 'anew', data: {} };
+    break;
+  case 'aedit_again':
+    text = 'Не понял. Формат: название; минуты; цена. Например: Стрижка; 60; 1500';
+    kb = [[btn('Отмена', 'asv')]];
+    break;
+  case 'aupd':
+    text = r === true ? 'Услуга сохранена.' : 'Не удалось сохранить услугу.';
+    kb = [[btn('К услугам', 'asv')]];
+    state = 'clear';
+    break;
+  case 'aadd':
+    text = r ? 'Услуга добавлена. Чтобы ее могли выбрать, привяжите мастера к услуге (пока через администратора базы).' : 'Не удалось добавить услугу.';
+    kb = [[btn('К услугам', 'asv')]];
+    state = 'clear';
+    break;
+  case 'aact':
+    text = r === true ? (rt.on ? 'Услуга возвращена клиентам.' : 'Услуга скрыта от клиентов.') : 'Не удалось изменить статус услуги.';
+    kb = [[btn('К услугам', 'asv')]];
+    break;
+  default: menuScreen();
+}
+
+const body = { text };
+if (kb.length) body.attachments = [{ type: 'inline_keyboard', payload: { buttons: kb } }];
+const actions = [];
+if (rt.handler !== 'dup') {
+  if (ev.kind === 'callback') {
+    if (SCREEN_MODE === 'edit' && ev.mid) {
+      actions.push({ op: 'edit', method: 'PUT', url: `${API}/messages?message_id=${encodeURIComponent(ev.mid)}`, body });
+      actions.push({ op: 'answer', method: 'POST', url: `${API}/answers?callback_id=${encodeURIComponent(ev.callback_id)}`, body: notification ? { notification } : {} });
+    } else {
+      actions.push({ op: 'answer', method: 'POST', url: `${API}/answers?callback_id=${encodeURIComponent(ev.callback_id)}`, body: notification ? { message: body, notification } : { message: body } });
+    }
+  } else {
+    actions.push({ op: 'send', method: 'POST', url: `${API}/messages?user_id=${ev.user_id}`, body });
+  }
+  for (const n of notes) actions.push({ op: 'notify', method: 'POST', url: `${API}/messages?user_id=${n.user_id}`, body: { text: n.text } });
+}
+let st = { set: false, step: '', data: {} };
+if (state === 'clear') st = { set: true, step: '', data: {} };
+else if (state !== 'keep') st = { set: true, step: state.step, data: JSON.parse(JSON.stringify(state.data || {})) };
+// a button that opens a text step must also reset stale text steps; a plain screen change keeps the current step
+return [{ json: { user_id: ev.user_id, dry: ev.dry === true, handler: rt.handler, actions,
+  state_set: st.set, state_step: st.step, state_data: JSON.stringify(st.data) } }];

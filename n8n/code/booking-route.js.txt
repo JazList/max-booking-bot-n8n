@@ -1,0 +1,169 @@
+// n8n Code node, mode: Run Once for All Items.
+// Event + dialog context -> handler, one whitelisted SQL (constants only, values go as parameters).
+const SC = '{{CLIENT_CODE}}_booking';
+const ev = $('Guard').first().json;
+const ctx = ($input.first().json || {}).ctx || {};
+const isAdmin = ctx.admin === true;
+const step = String(ctx.step || '');
+const data = ctx.data && typeof ctx.data === 'object' ? ctx.data : {};
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const NOP = "select '{}'::jsonb as r";
+const Q = {
+  svcs: `select coalesce(jsonb_agg(jsonb_build_object('id',service_id,'title',title,'min',duration_minutes,'price',price_minor)),'[]'::jsonb) as r from ${SC}.list_services()`,
+  staff: `select coalesce(jsonb_agg(jsonb_build_object('id',staff_id,'name',display_name)),'[]'::jsonb) as r from ${SC}.list_staff($1::uuid)`,
+  days: `select coalesce(jsonb_agg(d order by d),'[]'::jsonb) as r from (select distinct to_char((starts_at at time zone 'Europe/Moscow')::date,'YYYY-MM-DD') as d from ${SC}.free_slots($1::uuid, nullif($2,'any')::uuid, current_date, current_date+27)) x`,
+  slots: `select coalesce(jsonb_agg(jsonb_build_object('id',slot_id,'t',to_char(starts_at at time zone 'Europe/Moscow','HH24:MI'),'staff',staff_name) order by starts_at),'[]'::jsonb) as r from ${SC}.free_slots($1::uuid, nullif($2,'any')::uuid, $3::date, $3::date)`,
+  summary: `select ${SC}.bot_slot_summary($1::uuid,$2::uuid) as r`,
+  create: `select ${SC}.bot_create_appointment($1::bigint,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6,$7) as r`,
+  acreate: `select ${SC}.bot_admin_create_appointment($1::bigint,$2::uuid,$3::uuid,$4::uuid,$5,$6) as r`,
+  my: `select ${SC}.bot_my_appointments($1::bigint) as r`,
+  cancel: `select ${SC}.bot_cancel_appointment($1::bigint,$2::uuid) as r`,
+  consent: `with c as (select ${SC}.bot_grant_consent($1::bigint)) select '{}'::jsonb as r from c`,
+  alist: `select coalesce(jsonb_agg(jsonb_build_object('id',appointment_uuid,'t',to_char(starts_at at time zone 'Europe/Moscow','HH24:MI'),'svc',service_title,'staff',staff_name,'name',customer_name,'phone',customer_phone,'src',source) order by starts_at),'[]'::jsonb) as r from ${SC}.admin_list_appointments($1::bigint,$2::date,false)`,
+  acancel: `select to_jsonb(${SC}.admin_cancel_appointment($1::bigint,$2::uuid,'cancelled by administrator')) as r`,
+  astaff: `select coalesce(jsonb_agg(jsonb_build_object('id',staff_id,'name',display_name,'active',is_active)),'[]'::jsonb) as r from ${SC}.admin_list_staff($1::bigint)`,
+  aexc: `select to_jsonb(e) as r from ${SC}.admin_set_exception($1::bigint,$2::uuid,$3::date,false,null,null,'bot') e`,
+  arem: `select to_jsonb(${SC}.admin_remove_exception($1::bigint,$2::uuid,$3::date)) as r`,
+  awh: `select to_jsonb(w) as r from ${SC}.admin_set_work_hours($1::bigint,$2::uuid,$3::int,$4::time,$5::time) w`,
+  asvc: `select coalesce(jsonb_agg(jsonb_build_object('id',service_id,'title',title,'min',duration_minutes,'price',price_minor,'active',is_active)),'[]'::jsonb) as r from ${SC}.admin_list_services($1::bigint)`,
+  aupd: `select to_jsonb(${SC}.admin_update_service($1::bigint,$2::uuid,$3,$4::int,$5::bigint,false)) as r`,
+  aact: `select to_jsonb(${SC}.admin_set_service_active($1::bigint,$2::uuid,$3::boolean)) as r`,
+  aadd: `select to_jsonb(${SC}.admin_add_service($1::bigint,$2,$3::int,$4::bigint,null)) as r`
+};
+const uuidFrom = (s) => {
+  const h = require('crypto').createHash('sha256').update(s).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+};
+const uid = ev.user_id;
+const go = (handler, sql, params, extra) => [{ json: Object.assign({
+  ev, ctx, handler, sql: sql ? Q[sql] : NOP, params: params || []
+}, extra || {}) }];
+const menu = () => go(isAdmin ? 'amenu' : 'menu');
+const bad = (v, re) => !re.test(String(v || ''));
+
+if (ctx.fresh === false) return go('dup');
+if (ev.kind === 'start') return menu();
+
+// ---------- text input ----------
+if (ev.kind === 'message') {
+  const t = ev.text;
+  if (step === 'name' && data.svc && data.slot) {
+    if (t.length < 2 || t.length > 80) return go('ask_name_again', null, [], { st: data });
+    return go('ask_phone', null, [], { st: Object.assign({}, data, { name: t }) });
+  }
+  if (step === 'phone' && data.svc && data.slot && data.name) {
+    const digits = t.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) return go('ask_phone_again', null, [], { st: data });
+    const st = Object.assign({}, data, { phone: t.slice(0, 40) });
+    if (data.mode === 'p') {
+      if (!isAdmin) return menu();
+      const appt = uuidFrom(`a|${uid}|${data.slot}|${data.n}`);
+      return go('acreate', 'acreate', [uid, appt, data.svc, data.slot, data.name, st.phone], { st });
+    }
+    return go('summary', 'summary', [data.svc, data.slot], { st });
+  }
+  if (isAdmin && step === 'ahours' && data.sid && data.dow !== undefined) {
+    const m = t.match(/^(\d{1,2})[:.](\d{2})\s*[-–—]\s*(\d{1,2})[:.](\d{2})$/);
+    if (!m) return go('ahours_again', null, [], { st: data });
+    const a = `${m[1].padStart(2, '0')}:${m[2]}`;
+    const b = `${m[3].padStart(2, '0')}:${m[4]}`;
+    return go('ahours', 'awh', [uid, data.sid, String(data.dow), a, b], { st: data });
+  }
+  if (isAdmin && (step === 'aedit' || step === 'anew')) {
+    const parts = t.split(';').map((s) => s.trim());
+    const dur = Number(parts[1]);
+    const price = Number(String(parts[2] || '').replace(',', '.').replace(/\s/g, ''));
+    if (parts.length !== 3 || parts[0].length < 2 || !Number.isInteger(dur) || dur < 5 || dur > 600
+      || !Number.isFinite(price) || price < 0) return go('aedit_again', null, [], { st: data, step });
+    const minor = String(Math.round(price * 100));
+    if (step === 'aedit' && data.id) return go('aupd', 'aupd', [uid, data.id, parts[0], String(dur), minor]);
+    if (step === 'anew') return go('aadd', 'aadd', [uid, parts[0], String(dur), minor]);
+  }
+  return menu();
+}
+
+// ---------- button presses ----------
+const [cmd, ...a] = String(ev.payload || '').split(':');
+const mode = ['psvc', 'pstf', 'pdays', 'pday', 'pslot'].includes(cmd) ? 'p' : '';
+const c = mode ? cmd.slice(1) : cmd;
+if (mode && !isAdmin) return menu();
+const adminOnly = ['adays', 'ad', 'ac', 'abook', 'ast', 'as', 'ax', 'axd', 'ar', 'ard', 'aw', 'awd', 'asv', 'asi', 'ase', 'asa', 'asn', 'amenu'];
+if (adminOnly.includes(cmd) && !isAdmin) return menu();
+
+switch (c) {
+  case 'menu': return menu();
+  case 'book':
+    if (!ctx.consent) return go('consent_ask');
+    return go('svcs', 'svcs', [], { mode: '' });
+  case 'abook': return go('svcs', 'svcs', [], { mode: 'p' });
+  case 'consent': return go('consent_yes', 'consent', [uid]);
+  case 'svc':
+    if (bad(a[0], UUID)) return menu();
+    return go('staff', 'staff', [a[0]], { mode, svc: a[0] });
+  case 'stf':
+  case 'days': {
+    if (bad(a[0], UUID) || (a[1] !== 'any' && bad(a[1], UUID))) return menu();
+    return go('days', 'days', [a[0], a[1]], { mode, svc: a[0], stf: a[1], off: c === 'days' ? Math.max(0, parseInt(a[2], 10) || 0) : 0 });
+  }
+  case 'day':
+    if (bad(a[0], UUID) || (a[1] !== 'any' && bad(a[1], UUID)) || bad(a[2], DAY)) return menu();
+    return go('slots', 'slots', [a[0], a[1], a[2]], { mode, svc: a[0], stf: a[1], day: a[2] });
+  case 'slot':
+    if (bad(a[0], UUID) || bad(a[1], UUID)) return menu();
+    return go('ask_name', null, [], { mode, st: { svc: a[0], slot: a[1], mode, n: ev.event_id.slice(0, 40) } });
+  case 'ok': {
+    if (step !== 'confirm' || !data.svc || !data.slot || !data.name || !data.phone) return menu();
+    const appt = uuidFrom(`b|${uid}|${data.slot}|${data.n}`);
+    const cons = uuidFrom(`c|${uid}|${data.n}`);
+    return go('created', 'create', [uid, appt, cons, data.svc, data.slot, data.name, data.phone]);
+  }
+  case 'my': return go('my', 'my', [uid]);
+  case 'cancel':
+    if (bad(a[0], UUID)) return menu();
+    return go('cancelled', 'cancel', [uid, a[0]]);
+  case 'rem_ok': return go('rem_ok');
+}
+switch (cmd) {
+  case 'amenu': return menu();
+  case 'adays': return go('adays');
+  case 'ad':
+    if (bad(a[0], DAY)) return menu();
+    return go('alist', 'alist', [uid, a[0]], { day: a[0] });
+  case 'ac':
+    if (bad(a[0], UUID)) return menu();
+    return go('acancelled', 'acancel', [uid, a[0]]);
+  case 'ast': return go('ast', 'astaff', [uid]);
+  case 'as':
+    if (bad(a[0], UUID)) return menu();
+    return go('as', 'astaff', [uid], { sid: a[0] });
+  case 'ax': case 'ar':
+    if (bad(a[0], UUID)) return menu();
+    return go('pickdate', null, [], { sid: a[0], what: cmd });
+  case 'axd':
+    if (bad(a[0], UUID) || bad(a[1], DAY)) return menu();
+    return go('aexc', 'aexc', [uid, a[0], a[1]], { sid: a[0], day: a[1] });
+  case 'ard':
+    if (bad(a[0], UUID) || bad(a[1], DAY)) return menu();
+    return go('arem', 'arem', [uid, a[0], a[1]], { sid: a[0], day: a[1] });
+  case 'aw':
+    if (bad(a[0], UUID)) return menu();
+    return go('pickdow', null, [], { sid: a[0] });
+  case 'awd': {
+    const dow = parseInt(a[1], 10);
+    if (bad(a[0], UUID) || !(dow >= 0 && dow <= 6)) return menu();
+    return go('ask_hours', null, [], { st: { sid: a[0], dow } });
+  }
+  case 'asv': return go('asv', 'asvc', [uid]);
+  case 'asi':
+    if (bad(a[0], UUID)) return menu();
+    return go('asi', 'asvc', [uid], { sid: a[0] });
+  case 'ase':
+    if (bad(a[0], UUID)) return menu();
+    return go('ask_edit', null, [], { st: { id: a[0] } });
+  case 'asn': return go('ask_new', null, []);
+  case 'asa':
+    if (bad(a[0], UUID) || !['0', '1'].includes(a[1])) return menu();
+    return go('aact', 'aact', [uid, a[0], a[1] === '1' ? 'true' : 'false'], { sid: a[0], on: a[1] === '1' });
+}
+return menu();

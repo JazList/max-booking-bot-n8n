@@ -1,0 +1,201 @@
+{
+  "name": "{{CLIENT_CODE_UPPER}} - booking-reminders-max",
+  "id": "{{N8N_WF_ID:booking-reminders-max}}",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "n01-every-15-minutes",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from {{CLIENT_CODE}}_booking.bot_due_reminders(now(), 50)",
+        "options": {
+          "queryReplacement": "={{ [] }}"
+        }
+      },
+      "id": "n02-due-reminders",
+      "name": "Due reminders",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_ID:pg}}",
+          "name": "{{CLIENT_CODE_UPPER}} n8n_runtime"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node, mode: Run Once for All Items.\n// Rows of bot_due_reminders -> one MAX message per reminder (buttons: \"Приду\", \"Отменить\").\nconst API = 'https://platform-api2.max.ru';\nconst pad = (n) => String(n).padStart(2, '0');\nconst msk = (iso) => new Date(new Date(iso).getTime() + 3 * 3600 * 1000);\nconst fmt = (iso) => { const d = msk(iso); return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)} в ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };\nreturn $input.all().map((item) => {\n  const r = item.json;\n  const when = /24/.test(String(r.kind)) ? 'завтра' : 'скоро';\n  const text = `Напоминаем: ${when}, ${fmt(r.starts_at)}, у вас запись.\\nУслуга: ${r.service_title}\\nМастер: ${r.staff_name}`;\n  const buttons = [[\n    { type: 'callback', text: 'Приду', payload: `rem_ok:${r.appointment_uuid}` },\n    { type: 'callback', text: 'Отменить', payload: `cancel:${r.appointment_uuid}` }\n  ]];\n  return { json: {\n    reminder_id: r.reminder_id,\n    method: 'POST',\n    url: `${API}/messages?user_id=${r.max_user_id}`,\n    body: { text, attachments: [{ type: 'inline_keyboard', payload: { buttons } }] }\n  } };\n});\n"
+      },
+      "id": "n03-build-reminders",
+      "name": "Build reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 600
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "n04-send-reminder",
+      "name": "Send reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CRED_ID:max}}",
+          "name": "{{CLIENT_CODE_UPPER}} MAX bot token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n Code node, mode: Run Once for Each Item.\n// Delivery result -> status for mark_reminder. HTTP 200 = sent; anything else, including an error item, = failed.\nconst src = $('Build reminders').item.json;\nconst code = Number($json.statusCode);\nconst sent = code === 200 && !$json.error;\nreturn { json: { reminder_id: src.reminder_id, status: sent ? 'sent' : 'failed', http_status: Number.isFinite(code) ? code : 0 } };\n"
+      },
+      "id": "n05-classify",
+      "name": "Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select {{CLIENT_CODE}}_booking.mark_reminder($1::uuid, $2, 'max') as marked",
+        "options": {
+          "queryReplacement": "={{ [$json.reminder_id, $json.status] }}"
+        }
+      },
+      "id": "n06-mark-reminder",
+      "name": "Mark reminder",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_ID:pg}}",
+          "name": "{{CLIENT_CODE_UPPER}} n8n_runtime"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Due reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Due reminders": {
+      "main": [
+        [
+          {
+            "node": "Build reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build reminders": {
+      "main": [
+        [
+          {
+            "node": "Send reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send reminder": {
+      "main": [
+        [
+          {
+            "node": "Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify": {
+      "main": [
+        [
+          {
+            "node": "Mark reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  }
+}
